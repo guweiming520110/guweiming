@@ -7,17 +7,18 @@ import time
 
 class DaLeTouScraper:
     def __init__(self):
-        self.base_url = "http://datachart.500.com/dlt/history/history.shtml"
+        self.base_url = "http://datachart.500.com/dlt/history/newinc/history.php"
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
     
-    def scrape_historical_data(self, start_year=2023, end_year=2025, limit=100):
-        print(f"正在抓取最近的开奖数据...")
+    def scrape_historical_data(self, start_year=2023, end_year=2025, limit=500):
+        print(f"正在抓取历史开奖数据（最多{limit}条）...")
         all_data = []
         
         try:
-            response = requests.get(self.base_url, headers=self.headers, timeout=15)
+            params = {'limit': limit}
+            response = requests.get(self.base_url, params=params, headers=self.headers, timeout=20)
             response.encoding = 'gb2312'
             
             if response.status_code == 200:
@@ -58,9 +59,6 @@ class DaLeTouScraper:
                                         'back_1': back_nums[0],
                                         'back_2': back_nums[1]
                                     })
-                                    
-                                    if len(all_data) >= limit:
-                                        break
                         except (ValueError, IndexError) as e:
                             continue
                 
@@ -69,6 +67,8 @@ class DaLeTouScraper:
         
         df = pd.DataFrame(all_data)
         print(f"成功获取 {len(df)} 条数据")
+        if len(df) > 0:
+            print(f"期号范围: {df['period'].iloc[0]} 到 {df['period'].iloc[-1]}")
         return df
     
     def save_to_csv(self, df, filename='lottery_data.csv'):
