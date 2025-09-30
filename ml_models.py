@@ -214,8 +214,8 @@ class LotteryPredictor:
         
         elif play_type == 'top_prob':
             result['predictions'].append({
-                'front': sorted([num for num, _ in sorted_front[:5]]),
-                'back': sorted([num for num, _ in sorted_back[:2]]),
+                'front': sorted([num for num, _ in sorted_front[:10]]),
+                'back': sorted([num for num, _ in sorted_back[:5]]),
                 'front_probs': {num: float(prob) for num, prob in sorted_front[:10]},
                 'back_probs': {num: float(prob) for num, prob in sorted_back[:5]}
             })
