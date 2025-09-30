@@ -108,14 +108,31 @@ def predict():
         predict_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         for idx, pred in enumerate(prediction_result['predictions']):
+            if play_type == 'dantuo':
+                front_numbers = f"胆:{','.join(map(str, pred['front_dan']))} 拖:{','.join(map(str, pred['front_tuo']))}"
+                back_numbers = f"胆:{','.join(map(str, pred['back_dan']))} 拖:{','.join(map(str, pred['back_tuo']))}"
+                front_probs = json.dumps({
+                    'dan': pred.get('front_dan_probs', {}),
+                    'tuo': pred.get('front_tuo_probs', {})
+                })
+                back_probs = json.dumps({
+                    'dan': pred.get('back_dan_probs', {}),
+                    'tuo': pred.get('back_tuo_probs', {})
+                })
+            else:
+                front_numbers = ','.join(map(str, pred['front']))
+                back_numbers = ','.join(map(str, pred['back']))
+                front_probs = json.dumps(pred['front_probs'])
+                back_probs = json.dumps(pred['back_probs'])
+            
             prediction_data = {
                 'predict_time': predict_time,
                 'target_period': target_period,
                 'play_type': play_type,
-                'front_numbers': ','.join(map(str, pred['front'])),
-                'back_numbers': ','.join(map(str, pred['back'])),
-                'front_probabilities': json.dumps(pred['front_probs']),
-                'back_probabilities': json.dumps(pred['back_probs'])
+                'front_numbers': front_numbers,
+                'back_numbers': back_numbers,
+                'front_probabilities': front_probs,
+                'back_probabilities': back_probs
             }
             db.save_prediction(prediction_data)
         
@@ -210,8 +227,19 @@ def verify_predictions():
                 actual_front = [row['front_1'], row['front_2'], row['front_3'], row['front_4'], row['front_5']]
                 actual_back = [row['back_1'], row['back_2']]
                 
-                pred_front = list(map(int, pred.front_numbers.split(',')))
-                pred_back = list(map(int, pred.back_numbers.split(',')))
+                if pred.play_type == 'dantuo':
+                    front_parts = pred.front_numbers.split(' 拖:')
+                    front_dan = list(map(int, front_parts[0].replace('胆:', '').split(',')))
+                    front_tuo = list(map(int, front_parts[1].split(','))) if len(front_parts) > 1 else []
+                    pred_front = front_dan + front_tuo
+                    
+                    back_parts = pred.back_numbers.split(' 拖:')
+                    back_dan = list(map(int, back_parts[0].replace('胆:', '').split(',')))
+                    back_tuo = list(map(int, back_parts[1].split(','))) if len(back_parts) > 1 else []
+                    pred_back = back_dan + back_tuo
+                else:
+                    pred_front = list(map(int, pred.front_numbers.split(',')))
+                    pred_back = list(map(int, pred.back_numbers.split(',')))
                 
                 front_match = len(set(pred_front) & set(actual_front))
                 back_match = len(set(pred_back) & set(actual_back))
