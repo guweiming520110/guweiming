@@ -24,42 +24,44 @@ class DaLeTouScraper:
                 
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.text, 'html.parser')
-                    table = soup.find('table', {'class': 'kj_tablelist02'})
                     
-                    if table:
-                        rows = table.find_all('tr')[2:]
+                    all_rows = soup.find_all('tr')
+                    
+                    for row in all_rows:
+                        cols = row.find_all('td')
                         
-                        for row in rows:
-                            cols = row.find_all('td')
-                            if len(cols) >= 14:
-                                period = cols[0].text.strip()
-                                date_str = cols[1].text.strip()
+                        if len(cols) >= 8:
+                            try:
+                                text_data = [col.text.strip() for col in cols]
                                 
-                                front_nums = []
-                                back_nums = []
-                                
-                                for i in range(2, 7):
-                                    num = cols[i].text.strip()
-                                    if num:
-                                        front_nums.append(int(num))
-                                
-                                for i in range(7, 9):
-                                    num = cols[i].text.strip()
-                                    if num:
-                                        back_nums.append(int(num))
-                                
-                                if len(front_nums) == 5 and len(back_nums) == 2:
-                                    all_data.append({
-                                        'period': period,
-                                        'date': date_str,
-                                        'front_1': front_nums[0],
-                                        'front_2': front_nums[1],
-                                        'front_3': front_nums[2],
-                                        'front_4': front_nums[3],
-                                        'front_5': front_nums[4],
-                                        'back_1': back_nums[0],
-                                        'back_2': back_nums[1]
-                                    })
+                                if text_data[0].isdigit() and len(text_data[0]) == 5:
+                                    period = text_data[0]
+                                    
+                                    front_nums = []
+                                    back_nums = []
+                                    
+                                    for i in range(1, 6):
+                                        if i < len(text_data) and text_data[i].isdigit():
+                                            front_nums.append(int(text_data[i]))
+                                    
+                                    for i in range(6, 8):
+                                        if i < len(text_data) and text_data[i].isdigit():
+                                            back_nums.append(int(text_data[i]))
+                                    
+                                    if len(front_nums) == 5 and len(back_nums) == 2:
+                                        all_data.append({
+                                            'period': period,
+                                            'date': f'{year}-??-??',
+                                            'front_1': front_nums[0],
+                                            'front_2': front_nums[1],
+                                            'front_3': front_nums[2],
+                                            'front_4': front_nums[3],
+                                            'front_5': front_nums[4],
+                                            'back_1': back_nums[0],
+                                            'back_2': back_nums[1]
+                                        })
+                            except (ValueError, IndexError):
+                                continue
                     
                     time.sleep(1)
                 
