@@ -340,29 +340,38 @@
             if (playType === 'basic') {
                 resultTitle.textContent = '基础推荐 (5+2)：';
                 const pred = prediction.predictions[0];
+                const betAmount = 2;
                 resultContent.innerHTML = `
+                    <div style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+                        <p style="margin: 0; color: #1565c0; font-weight: bold;">💰 投注金额：${betAmount} 元 (单注)</p>
+                    </div>
                     <div>
                         <p><strong>前区号码：</strong></p>
                         <div class="numbers">
                             ${pred.front.map(n => `<div class="number front-number">${String(n).padStart(2, '0')}</div>`).join('')}
                         </div>
-                        ${pred.front_probs ? `<p style="margin-top: 10px; font-size: 12px; color: #666;">概率: ${pred.front_probs.map(p => p.toFixed(3)).join(', ')}</p>` : ''}
+                        ${pred.front_probs ? `<p style="margin-top: 10px; font-size: 12px; color: #666;">概率: ${Object.values(pred.front_probs).slice(0, 5).map(p => p.toFixed(3)).join(', ')}</p>` : ''}
                     </div>
                     <div style="margin-top: 15px;">
                         <p><strong>后区号码：</strong></p>
                         <div class="numbers">
                             ${pred.back.map(n => `<div class="number back-number">${String(n).padStart(2, '0')}</div>`).join('')}
                         </div>
-                        ${pred.back_probs ? `<p style="margin-top: 10px; font-size: 12px; color: #666;">概率: ${pred.back_probs.map(p => p.toFixed(3)).join(', ')}</p>` : ''}
+                        ${pred.back_probs ? `<p style="margin-top: 10px; font-size: 12px; color: #666;">概率: ${Object.values(pred.back_probs).slice(0, 2).map(p => p.toFixed(3)).join(', ')}</p>` : ''}
                     </div>
                 `;
             } else if (playType === 'multiple') {
                 resultTitle.textContent = '多组推荐 (3组)：';
-                let html = '';
+                const totalAmount = prediction.predictions.length * 2;
+                let html = `
+                    <div style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+                        <p style="margin: 0; color: #1565c0; font-weight: bold;">💰 总投注金额：${totalAmount} 元 (${prediction.predictions.length} 组 × 2元)</p>
+                    </div>
+                `;
                 prediction.predictions.forEach((pred, idx) => {
                     html += `
                         <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-                            <h4 style="margin: 0 0 10px 0; color: #667eea;">第 ${idx + 1} 组</h4>
+                            <h4 style="margin: 0 0 10px 0; color: #667eea;">第 ${idx + 1} 组 (2元)</h4>
                             <div>
                                 <p><strong>前区：</strong></p>
                                 <div class="numbers">
@@ -382,15 +391,22 @@
             } else if (playType === 'top_prob') {
                 resultTitle.textContent = '高概率推荐 (Top候选)：';
                 const pred = prediction.predictions[0];
+                const frontProbs = pred.front_probs || {};
+                const backProbs = pred.back_probs || {};
                 resultContent.innerHTML = `
+                    <div style="background: #fff3e0; padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+                        <p style="margin: 0; color: #e65100; font-size: 14px;">
+                            💡 这是候选号码列表，您可从中选择5个前区和2个后区进行投注 (单注2元)
+                        </p>
+                    </div>
                     <div>
                         <p><strong>前区 Top 10 候选号码：</strong></p>
                         <div class="numbers">
-                            ${pred.front.map((n, i) => `
+                            ${pred.front.map((n) => `
                                 <div class="number front-number" style="position: relative;">
                                     ${String(n).padStart(2, '0')}
                                     <span style="position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #666;">
-                                        ${pred.front_probs[i].toFixed(3)}
+                                        ${(frontProbs[n] || frontProbs[String(n)] || 0).toFixed(3)}
                                     </span>
                                 </div>
                             `).join('')}
@@ -399,11 +415,11 @@
                     <div style="margin-top: 30px;">
                         <p><strong>后区 Top 5 候选号码：</strong></p>
                         <div class="numbers">
-                            ${pred.back.map((n, i) => `
+                            ${pred.back.map((n) => `
                                 <div class="number back-number" style="position: relative;">
                                     ${String(n).padStart(2, '0')}
                                     <span style="position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #666;">
-                                        ${pred.back_probs[i].toFixed(3)}
+                                        ${(backProbs[n] || backProbs[String(n)] || 0).toFixed(3)}
                                     </span>
                                 </div>
                             `).join('')}
@@ -417,11 +433,13 @@
                 const frontTuo = pred.front_tuo || [];
                 const backDan = pred.back_dan || [];
                 const backTuo = pred.back_tuo || [];
-                const combinations = pred.combination_count || prediction.total_combinations || '计算中...';
+                const combinations = pred.combination_count || prediction.total_combinations || 0;
+                const totalAmount = combinations * 2;
                 
                 resultContent.innerHTML = `
                     <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
                         <p style="margin: 0; color: #2e7d32; font-weight: bold;">📊 总投注组合数：${combinations} 注</p>
+                        <p style="margin: 5px 0 0 0; font-weight: bold; color: #1565c0;">💰 总投注金额：${totalAmount} 元 (${combinations}注 × 2元)</p>
                         <p style="margin: 5px 0 0 0; font-size: 13px; color: #666;">${pred.description || ''}</p>
                     </div>
                     <div>
