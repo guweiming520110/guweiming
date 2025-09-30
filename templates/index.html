@@ -272,7 +272,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ limit: 500 })
+                    body: JSON.stringify({ limit: 5000 })
                 });
                 const data = await response.json();
                 
@@ -415,10 +415,14 @@
             table.innerHTML = '';
             
             try {
-                const response = await fetch('/api/historical_data');
+                const response = await fetch('/api/historical_data?limit=100');
                 const data = await response.json();
                 
                 if (response.ok) {
+                    const totalCount = data.total_count;
+                    const displayLimit = 100;
+                    const displayData = data.data;
+                    
                     const html = `
                         <table>
                             <thead>
@@ -430,7 +434,7 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                ${data.data.map(row => `
+                                ${displayData.map(row => `
                                     <tr>
                                         <td>${row.period}</td>
                                         <td>${row.date}</td>
@@ -440,6 +444,9 @@
                                 `).join('')}
                             </tbody>
                         </table>
+                        <div style="text-align: center; padding: 15px; color: #667eea; font-weight: bold; font-size: 1.1em;">
+                            ${totalCount > displayLimit ? `显示最近 ${displayLimit} 条，` : ''}总共 ${totalCount} 条历史数据
+                        </div>
                     `;
                     table.innerHTML = html;
                 } else {
