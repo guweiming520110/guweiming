@@ -84,6 +84,15 @@ class Database:
                 'back_2': r.back_2
             })
         return pd.DataFrame(data)
+    
+    def get_latest_period(self):
+        """获取数据库中最新的期号"""
+        latest = self.session.query(LotteryRecord).order_by(LotteryRecord.period.desc()).first()
+        return latest.period if latest else None
+    
+    def get_record_count(self):
+        """获取数据库中的记录总数"""
+        return self.session.query(LotteryRecord).count()
 
 if __name__ == "__main__":
     db = Database()
