@@ -83,7 +83,8 @@ class Database:
     def get_all_records(self):
         session = self.get_session()
         try:
-            records = session.query(LotteryRecord).order_by(LotteryRecord.period.desc()).all()
+            from sqlalchemy import cast, Integer
+            records = session.query(LotteryRecord).order_by(cast(LotteryRecord.period, Integer).desc()).all()
             data = []
             for r in records:
                 data.append({
@@ -109,7 +110,8 @@ class Database:
         """获取数据库中最新的期号"""
         session = self.get_session()
         try:
-            latest = session.query(LotteryRecord).order_by(LotteryRecord.period.desc()).first()
+            from sqlalchemy import cast, Integer
+            latest = session.query(LotteryRecord).order_by(cast(LotteryRecord.period, Integer).desc()).first()
             return latest.period if latest else None
         except Exception as e:
             session.rollback()
