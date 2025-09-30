@@ -135,12 +135,14 @@
   - API默认limit=100防止大数据传输
 - **智能预测系统升级**：
   - 新增`predict_with_probabilities`函数，输出每个号码的预测概率
-  - 支持3种预测玩法：
+  - 支持4种预测玩法：
     - `basic`: 基础5+2推荐
-    - `multiple`: 多组号码推荐
+    - `multiple`: 多组号码推荐（3组）
     - `top_prob`: 高概率号码推荐（Top10前区+Top5后区）
+    - `dantuo`: 胆拖模式推荐（前区胆2拖8，后区胆1拖4，共224注）
   - 新增`PredictionRecord`表保存所有预测记录
   - 预测自动保存到数据库，包含概率值和玩法类型
+  - 胆拖模式自动计算组合数量
 - **预测验证系统**：
   - 新增`/api/predictions/history`查询历史预测记录
   - 新增`/api/predictions/verify`自动验证预测结果
