@@ -129,19 +129,26 @@ def frequency_chart():
 @app.route('/api/scrape', methods=['POST'])
 def scrape_data():
     try:
-        from data_scraper import DaLeTouScraper
+        from multi_source_scraper import MultiSourceScraper
         
         data = request.get_json() or {}
         limit = data.get('limit', 500)
         
         old_count = db.get_record_count()
-        latest_period = db.get_latest_period()
         
-        scraper = DaLeTouScraper()
-        df = scraper.scrape_historical_data(limit=limit)
+        # 使用多数据源采集器
+        scraper = MultiSourceScraper()
+        result = scraper.scrape_all_sources(limit=limit)
+        
+        df = result['dataframe']
+        sources = result['sources']
         
         if not df.empty:
-            filename = scraper.save_to_csv(df)
+            # 保存到CSV
+            filename = 'lottery_data.csv'
+            df.to_csv(filename, index=False, encoding='utf-8-sig')
+            
+            # 导入数据库
             db.insert_data_from_csv(filename)
             
             new_count = db.get_record_count()
@@ -156,7 +163,8 @@ def scrape_data():
                 'added_count': added_count,
                 'total_count': new_count,
                 'period_range': period_range,
-                'latest_period': db.get_latest_period()
+                'latest_period': db.get_latest_period(),
+                'sources': sources
             })
         else:
             return jsonify({'error': '数据采集失败'}), 500

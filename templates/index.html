@@ -268,12 +268,20 @@
             
             try {
                 const response = await fetch('/api/scrape', {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ limit: 500 })
                 });
                 const data = await response.json();
                 
                 if (response.ok) {
-                    success.textContent = data.message;
+                    let message = data.message;
+                    if (data.sources) {
+                        message += `\n数据来源：${data.sources.join(', ')}`;
+                    }
+                    success.textContent = message;
                     success.classList.add('show');
                 } else {
                     error.textContent = '错误：' + (data.error || '数据采集失败');
