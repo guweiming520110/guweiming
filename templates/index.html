@@ -306,7 +306,11 @@
             
             try {
                 const response = await fetch('/api/predict', {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ play_type: 'basic' })
                 });
                 const data = await response.json();
                 
@@ -317,14 +321,16 @@
                     frontDiv.innerHTML = '';
                     backDiv.innerHTML = '';
                     
-                    data.prediction.front.forEach(num => {
+                    const prediction = data.prediction.predictions ? data.prediction.predictions[0] : data.prediction;
+                    
+                    prediction.front.forEach(num => {
                         const div = document.createElement('div');
                         div.className = 'number front-number';
                         div.textContent = String(num).padStart(2, '0');
                         frontDiv.appendChild(div);
                     });
                     
-                    data.prediction.back.forEach(num => {
+                    prediction.back.forEach(num => {
                         const div = document.createElement('div');
                         div.className = 'number back-number';
                         div.textContent = String(num).padStart(2, '0');
