@@ -12,7 +12,7 @@ class DaLeTouScraper:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
     
-    def scrape_historical_data(self, start_year=2007, end_year=2025):
+    def scrape_historical_data(self, start_year=2023, end_year=2025):
         all_data = []
         
         for year in range(start_year, end_year + 1):
@@ -79,7 +79,7 @@ class DaLeTouScraper:
 
 def main():
     scraper = DaLeTouScraper()
-    df = scraper.scrape_historical_data(start_year=2020, end_year=2025)
+    df = scraper.scrape_historical_data(start_year=2023, end_year=2025)
     
     if not df.empty:
         scraper.save_to_csv(df)

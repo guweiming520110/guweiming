@@ -112,14 +112,14 @@ def scrape_data():
         from data_scraper import DaLeTouScraper
         
         scraper = DaLeTouScraper()
-        df = scraper.scrape_historical_data(start_year=2020, end_year=2025)
+        df = scraper.scrape_historical_data(start_year=2023, end_year=2025)
         
         if not df.empty:
             filename = scraper.save_to_csv(df)
             db.insert_data_from_csv(filename)
             return jsonify({
                 'success': True,
-                'message': f'成功采集 {len(df)} 条数据',
+                'message': f'成功采集 {len(df)} 条数据（2023-2025年）',
                 'count': len(df)
             })
         else:
