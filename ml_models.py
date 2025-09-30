@@ -126,6 +126,102 @@ class LotteryPredictor:
         print("✅ 模型验证通过（前区+后区）")
         return True
     
+    def predict_with_probabilities(self, latest_features, play_type='basic'):
+        """
+        预测号码并返回概率值
+        play_type: 'basic' (基础5+2), 'multiple' (多组推荐), 'top_prob' (按概率推荐)
+        """
+        if isinstance(latest_features, pd.DataFrame):
+            latest_features = latest_features.values
+        
+        if len(latest_features.shape) == 1:
+            latest_features = latest_features.reshape(1, -1)
+        
+        latest_features = self.scaler.transform(latest_features)
+        
+        front_proba_dict = {}
+        back_proba_dict = {}
+        
+        for model in self.rf_models_front:
+            pred_proba = model.predict_proba(latest_features)[0]
+            for cls, prob in zip(model.classes_, pred_proba):
+                num = int(cls)
+                if num not in front_proba_dict:
+                    front_proba_dict[num] = []
+                front_proba_dict[num].append(prob)
+        
+        for idx, model in enumerate(self.xgb_models_front):
+            pred_proba = model.predict_proba(latest_features)[0]
+            le = self.label_encoders_front[idx]
+            for cls_idx, prob in enumerate(pred_proba):
+                num = int(le.inverse_transform([cls_idx])[0])
+                if num not in front_proba_dict:
+                    front_proba_dict[num] = []
+                front_proba_dict[num].append(prob)
+        
+        for num in front_proba_dict:
+            front_proba_dict[num] = np.mean(front_proba_dict[num])
+        
+        for model in self.rf_models_back:
+            pred_proba = model.predict_proba(latest_features)[0]
+            for cls, prob in zip(model.classes_, pred_proba):
+                num = int(cls)
+                if num not in back_proba_dict:
+                    back_proba_dict[num] = []
+                back_proba_dict[num].append(prob)
+        
+        for idx, model in enumerate(self.xgb_models_back):
+            pred_proba = model.predict_proba(latest_features)[0]
+            le = self.label_encoders_back[idx]
+            for cls_idx, prob in enumerate(pred_proba):
+                num = int(le.inverse_transform([cls_idx])[0])
+                if num not in back_proba_dict:
+                    back_proba_dict[num] = []
+                back_proba_dict[num].append(prob)
+        
+        for num in back_proba_dict:
+            back_proba_dict[num] = np.mean(back_proba_dict[num])
+        
+        sorted_front = sorted(front_proba_dict.items(), key=lambda x: x[1], reverse=True)
+        sorted_back = sorted(back_proba_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        result = {
+            'play_type': play_type,
+            'predictions': []
+        }
+        
+        if play_type == 'basic':
+            result['predictions'].append({
+                'front': sorted([num for num, _ in sorted_front[:5]]),
+                'back': sorted([num for num, _ in sorted_back[:2]]),
+                'front_probs': {num: float(prob) for num, prob in sorted_front[:5]},
+                'back_probs': {num: float(prob) for num, prob in sorted_back[:2]}
+            })
+        
+        elif play_type == 'multiple':
+            for i in range(3):
+                start_idx = i * 2
+                front_slice = sorted_front[start_idx:start_idx+5]
+                back_slice = sorted_back[:2] if i == 0 else sorted_back[min(i, len(sorted_back)-2):min(i+2, len(sorted_back))]
+                
+                if len(front_slice) >= 5 and len(back_slice) >= 2:
+                    result['predictions'].append({
+                        'front': sorted([num for num, _ in front_slice[:5]]),
+                        'back': sorted([num for num, _ in back_slice[:2]]),
+                        'front_probs': {num: float(prob) for num, prob in front_slice[:5]},
+                        'back_probs': {num: float(prob) for num, prob in back_slice[:2]}
+                    })
+        
+        elif play_type == 'top_prob':
+            result['predictions'].append({
+                'front': sorted([num for num, _ in sorted_front[:5]]),
+                'back': sorted([num for num, _ in sorted_back[:2]]),
+                'front_probs': {num: float(prob) for num, prob in sorted_front[:10]},
+                'back_probs': {num: float(prob) for num, prob in sorted_back[:5]}
+            })
+        
+        return result
+    
     def predict_numbers(self, latest_features):
         if isinstance(latest_features, pd.DataFrame):
             latest_features = latest_features.values

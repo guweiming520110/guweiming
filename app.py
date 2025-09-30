@@ -51,12 +51,17 @@ def get_statistics():
 @app.route('/api/predict', methods=['POST'])
 def predict():
     try:
+        from datetime import datetime
+        
         df = db.get_all_records()
         if df.empty:
             return jsonify({'error': '暂无数据，无法预测'}), 404
         
         if len(df) < 50:
             return jsonify({'error': f'数据量不足：需要至少50条数据才能进行预测，当前只有{len(df)}条'}), 400
+        
+        data = request.get_json() or {}
+        play_type = data.get('play_type', 'basic')
         
         fe = FeatureEngineer(df)
         df_features = fe.extract_all_features()
@@ -93,10 +98,30 @@ def predict():
         
         latest_features = df_features[available_cols].iloc[-1:].values
         
-        prediction = predictor.predict_numbers(latest_features)
+        prediction_result = predictor.predict_with_probabilities(latest_features, play_type=play_type)
+        
+        latest_period_str = db.get_latest_period()
+        if latest_period_str:
+            target_period = str(int(latest_period_str) + 1)
+        else:
+            target_period = "00001"
+        predict_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        for idx, pred in enumerate(prediction_result['predictions']):
+            prediction_data = {
+                'predict_time': predict_time,
+                'target_period': target_period,
+                'play_type': play_type,
+                'front_numbers': ','.join(map(str, pred['front'])),
+                'back_numbers': ','.join(map(str, pred['back'])),
+                'front_probabilities': json.dumps(pred['front_probs']),
+                'back_probabilities': json.dumps(pred['back_probs'])
+            }
+            db.save_prediction(prediction_data)
         
         return jsonify({
-            'prediction': prediction,
+            'prediction': prediction_result,
+            'target_period': target_period,
             'message': '预测号码仅供参考，彩票开奖是随机的',
             'data_count': len(df)
         })
@@ -132,6 +157,85 @@ def frequency_chart():
     
     graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
     return jsonify({'chart': graphJSON})
+
+@app.route('/api/predictions/history')
+def get_predictions_history():
+    try:
+        limit = request.args.get('limit', default=50, type=int)
+        predictions = db.get_predictions(limit=limit)
+        
+        result = []
+        for pred in predictions:
+            result.append({
+                'id': pred.id,
+                'predict_time': pred.predict_time,
+                'target_period': pred.target_period,
+                'play_type': pred.play_type,
+                'front_numbers': pred.front_numbers,
+                'back_numbers': pred.back_numbers,
+                'front_probabilities': pred.front_probabilities,
+                'back_probabilities': pred.back_probabilities,
+                'actual_front': pred.actual_front,
+                'actual_back': pred.actual_back,
+                'is_matched': pred.is_matched,
+                'match_level': pred.match_level,
+                'front_match_count': pred.front_match_count,
+                'back_match_count': pred.back_match_count
+            })
+        
+        return jsonify({'predictions': result})
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/predictions/verify', methods=['POST'])
+def verify_predictions():
+    try:
+        df = db.get_all_records()
+        if df.empty:
+            return jsonify({'error': '暂无历史开奖数据'}), 404
+        
+        predictions = db.get_predictions(limit=1000)
+        verified_count = 0
+        
+        for pred in predictions:
+            if pred.actual_front:
+                continue
+            
+            target_period = pred.target_period
+            actual_record = df[df['period'] == target_period]
+            
+            if not actual_record.empty:
+                row = actual_record.iloc[0]
+                actual_front = [row['front_1'], row['front_2'], row['front_3'], row['front_4'], row['front_5']]
+                actual_back = [row['back_1'], row['back_2']]
+                
+                pred_front = list(map(int, pred.front_numbers.split(',')))
+                pred_back = list(map(int, pred.back_numbers.split(',')))
+                
+                front_match = len(set(pred_front) & set(actual_front))
+                back_match = len(set(pred_back) & set(actual_back))
+                
+                actual_front_str = ','.join(map(str, sorted(actual_front)))
+                actual_back_str = ','.join(map(str, sorted(actual_back)))
+                
+                db.update_prediction_result(
+                    pred.id,
+                    actual_front_str,
+                    actual_back_str,
+                    front_match,
+                    back_match
+                )
+                verified_count += 1
+        
+        return jsonify({
+            'success': True,
+            'verified_count': verified_count,
+            'message': f'已验证 {verified_count} 条预测记录'
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/scrape', methods=['POST'])
 def scrape_data():
