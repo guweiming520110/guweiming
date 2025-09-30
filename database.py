@@ -34,24 +34,39 @@ class Database:
     def insert_data_from_csv(self, csv_file):
         df = pd.read_csv(csv_file)
         
-        for _, row in df.iterrows():
-            existing = self.session.query(LotteryRecord).filter_by(period=row['period']).first()
-            if not existing:
-                record = LotteryRecord(
-                    period=row['period'],
-                    date=row['date'],
-                    front_1=row['front_1'],
-                    front_2=row['front_2'],
-                    front_3=row['front_3'],
-                    front_4=row['front_4'],
-                    front_5=row['front_5'],
-                    back_1=row['back_1'],
-                    back_2=row['back_2']
-                )
-                self.session.add(record)
-        
-        self.session.commit()
-        print("数据已导入数据库")
+        try:
+            added_count = 0
+            for _, row in df.iterrows():
+                period_str = str(int(row['period']))
+                
+                existing = self.session.query(LotteryRecord).filter(
+                    LotteryRecord.period == period_str
+                ).first()
+                
+                if not existing:
+                    record = LotteryRecord(
+                        period=period_str,
+                        date=str(row['date']),
+                        front_1=int(row['front_1']),
+                        front_2=int(row['front_2']),
+                        front_3=int(row['front_3']),
+                        front_4=int(row['front_4']),
+                        front_5=int(row['front_5']),
+                        back_1=int(row['back_1']),
+                        back_2=int(row['back_2'])
+                    )
+                    self.session.add(record)
+                    added_count += 1
+                    
+                    if added_count % 10 == 0:
+                        self.session.commit()
+            
+            self.session.commit()
+            print(f"数据已导入数据库，新增 {added_count} 条记录")
+        except Exception as e:
+            self.session.rollback()
+            print(f"数据导入出错: {str(e)}")
+            raise
     
     def get_all_records(self):
         records = self.session.query(LotteryRecord).order_by(LotteryRecord.period.desc()).all()
