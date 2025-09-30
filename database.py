@@ -29,11 +29,11 @@ class PredictionRecord(Base):
     target_period = Column(String(20), index=True)
     play_type = Column(String(50))
     
-    front_numbers = Column(String(100))
-    back_numbers = Column(String(50))
+    front_numbers = Column(String(200))
+    back_numbers = Column(String(100))
     
-    front_probabilities = Column(String(200))
-    back_probabilities = Column(String(100))
+    front_probabilities = Column(String(1000))
+    back_probabilities = Column(String(500))
     
     actual_front = Column(String(100))
     actual_back = Column(String(50))
