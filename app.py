@@ -21,8 +21,15 @@ def get_historical_data():
     if df.empty:
         return jsonify({'error': '暂无历史数据，请先采集数据'}), 404
     
-    records = df.head(50).to_dict('records')
-    return jsonify({'data': records})
+    limit = request.args.get('limit', default=100, type=int)
+    total_count = len(df)
+    
+    records = df.head(limit).to_dict('records')
+    
+    return jsonify({
+        'data': records,
+        'total_count': total_count
+    })
 
 @app.route('/api/statistics')
 def get_statistics():
@@ -132,7 +139,7 @@ def scrape_data():
         from multi_source_scraper import MultiSourceScraper
         
         data = request.get_json() or {}
-        limit = data.get('limit', 500)
+        limit = data.get('limit', 5000)
         
         old_count = db.get_record_count()
         
