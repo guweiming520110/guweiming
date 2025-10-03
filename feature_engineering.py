@@ -209,11 +209,20 @@ class FeatureEngineer:
                         if triplet in triplet_counts:
                             max_triplet_freq = max(max_triplet_freq, triplet_counts[triplet])
             
-            p_xy = max_pair_freq / total_draws if total_draws > 0 else 0
-            p_x = self.front_freq.get(nums[0], 0) / (total_draws * 5) if total_draws > 0 else 0
-            p_y = self.front_freq.get(nums[1], 0) / (total_draws * 5) if total_draws > 0 else 0
+            max_pmi = 0
+            for i in range(len(nums)):
+                for j in range(i+1, len(nums)):
+                    pair = (nums[i], nums[j])
+                    if pair in pair_counts:
+                        p_xy = pair_counts[pair] / total_draws
+                        p_x = self.front_freq.get(nums[i], 0) / (total_draws * 5)
+                        p_y = self.front_freq.get(nums[j], 0) / (total_draws * 5)
+                        
+                        if p_xy > 0 and p_x > 0 and p_y > 0:
+                            pmi = np.log2(p_xy / (p_x * p_y))
+                            max_pmi = max(max_pmi, pmi)
             
-            pmi = np.log2(p_xy / (p_x * p_y + 1e-10) + 1e-10) if p_xy > 0 else 0
+            pmi = max_pmi
             
             pair_scores.append(max_pair_freq)
             triplet_scores.append(max_triplet_freq)

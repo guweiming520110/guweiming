@@ -19,8 +19,8 @@ class LotteryPredictor:
         self.label_encoders_front = []
         self.label_encoders_back = []
         
-        self.meta_models_front = []
-        self.meta_models_back = []
+        self.rf_weight = 0.4
+        self.xgb_weight = 0.6
         self.use_stacking = True
         
     def prepare_data(self, df):
@@ -111,50 +111,14 @@ class LotteryPredictor:
         print("✅ XGBoost模型训练完成")
     
     def train_stacking(self, df):
-        """训练Stacking元学习器，使用RF和XGBoost的预测作为meta特征"""
-        if len(df) < 100:
-            print("警告：数据不足以训练Stacking模型，跳过")
-            self.use_stacking = False
-            return
+        """使用加权平均集成RF和XGBoost（针对稀疏彩票数据优化）"""
+        print(f"开始配置集成策略（加权平均），数据量: {len(df)}条")
         
-        X = self.prepare_data(df)
-        
-        print(f"开始训练Stacking元学习器，数据量: {len(df)}条")
-        
-        for i in range(1, 6):
-            y = df[f'front_{i}'].values
-            
-            meta_features = []
-            
-            rf_proba = self.rf_models_front[i-1].predict_proba(X)
-            xgb_proba = self.xgb_models_front[i-1].predict_proba(X)
-            
-            meta_features = np.hstack([rf_proba, xgb_proba])
-            
-            meta_model = LogisticRegression(max_iter=1000, random_state=42)
-            meta_model_calibrated = CalibratedClassifierCV(meta_model, method='sigmoid', cv=3)
-            meta_model_calibrated.fit(meta_features, y)
-            
-            self.meta_models_front.append(meta_model_calibrated)
-        
-        for i in range(1, 3):
-            y = df[f'back_{i}'].values
-            
-            meta_features = []
-            
-            rf_proba = self.rf_models_back[i-1].predict_proba(X)
-            xgb_proba = self.xgb_models_back[i-1].predict_proba(X)
-            
-            meta_features = np.hstack([rf_proba, xgb_proba])
-            
-            meta_model = LogisticRegression(max_iter=1000, random_state=42)
-            meta_model_calibrated = CalibratedClassifierCV(meta_model, method='sigmoid', cv=3)
-            meta_model_calibrated.fit(meta_features, y)
-            
-            self.meta_models_back.append(meta_model_calibrated)
-        
-        print("✅ Stacking元学习器训练完成（含Platt校准）")
+        self.rf_weight = 0.4
+        self.xgb_weight = 0.6
         self.use_stacking = True
+        
+        print(f"✅ 集成策略配置完成（RF权重={self.rf_weight}, XGBoost权重={self.xgb_weight}）")
     
     def validate_models(self, df):
         """验证模型是否与当前数据匹配"""
@@ -203,64 +167,39 @@ class LotteryPredictor:
         front_proba_dict = {}
         back_proba_dict = {}
         
-        if self.use_stacking and self.meta_models_front:
-            for i, meta_model in enumerate(self.meta_models_front):
-                rf_proba = self.rf_models_front[i].predict_proba(latest_features)
-                xgb_proba = self.xgb_models_front[i].predict_proba(latest_features)
-                meta_features = np.hstack([rf_proba, xgb_proba])
-                
-                pred_proba = meta_model.predict_proba(meta_features)[0]
-                for cls, prob in zip(meta_model.classes_, pred_proba):
-                    num = int(cls)
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob)
-            
-            for i, meta_model in enumerate(self.meta_models_back):
-                rf_proba = self.rf_models_back[i].predict_proba(latest_features)
-                xgb_proba = self.xgb_models_back[i].predict_proba(latest_features)
-                meta_features = np.hstack([rf_proba, xgb_proba])
-                
-                pred_proba = meta_model.predict_proba(meta_features)[0]
-                for cls, prob in zip(meta_model.classes_, pred_proba):
-                    num = int(cls)
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob)
-        else:
-            for model in self.rf_models_front:
-                pred_proba = model.predict_proba(latest_features)[0]
-                for cls, prob in zip(model.classes_, pred_proba):
-                    num = int(cls)
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob)
-            
-            for idx, model in enumerate(self.xgb_models_front):
-                pred_proba = model.predict_proba(latest_features)[0]
-                le = self.label_encoders_front[idx]
-                for cls_idx, prob in enumerate(pred_proba):
-                    num = int(le.inverse_transform([cls_idx])[0])
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob)
-            
-            for model in self.rf_models_back:
-                pred_proba = model.predict_proba(latest_features)[0]
-                for cls, prob in zip(model.classes_, pred_proba):
-                    num = int(cls)
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob)
-            
-            for idx, model in enumerate(self.xgb_models_back):
-                pred_proba = model.predict_proba(latest_features)[0]
-                le = self.label_encoders_back[idx]
-                for cls_idx, prob in enumerate(pred_proba):
-                    num = int(le.inverse_transform([cls_idx])[0])
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob)
+        for model in self.rf_models_front:
+            pred_proba = model.predict_proba(latest_features)[0]
+            for cls, prob in zip(model.classes_, pred_proba):
+                num = int(cls)
+                if num not in front_proba_dict:
+                    front_proba_dict[num] = []
+                front_proba_dict[num].append(prob * self.rf_weight)
+        
+        for idx, model in enumerate(self.xgb_models_front):
+            pred_proba = model.predict_proba(latest_features)[0]
+            le = self.label_encoders_front[idx]
+            for cls_idx, prob in enumerate(pred_proba):
+                num = int(le.inverse_transform([cls_idx])[0])
+                if num not in front_proba_dict:
+                    front_proba_dict[num] = []
+                front_proba_dict[num].append(prob * self.xgb_weight)
+        
+        for model in self.rf_models_back:
+            pred_proba = model.predict_proba(latest_features)[0]
+            for cls, prob in zip(model.classes_, pred_proba):
+                num = int(cls)
+                if num not in back_proba_dict:
+                    back_proba_dict[num] = []
+                back_proba_dict[num].append(prob * self.rf_weight)
+        
+        for idx, model in enumerate(self.xgb_models_back):
+            pred_proba = model.predict_proba(latest_features)[0]
+            le = self.label_encoders_back[idx]
+            for cls_idx, prob in enumerate(pred_proba):
+                num = int(le.inverse_transform([cls_idx])[0])
+                if num not in back_proba_dict:
+                    back_proba_dict[num] = []
+                back_proba_dict[num].append(prob * self.xgb_weight)
         
         for num in front_proba_dict:
             front_proba_dict[num] = np.mean(front_proba_dict[num])
@@ -423,16 +362,10 @@ class LotteryPredictor:
         with open(f'{path}/label_encoders_back.pkl', 'wb') as f:
             pickle.dump(self.label_encoders_back, f)
         
-        if self.meta_models_front and self.meta_models_back:
-            with open(f'{path}/meta_front.pkl', 'wb') as f:
-                pickle.dump(self.meta_models_front, f)
-            with open(f'{path}/meta_back.pkl', 'wb') as f:
-                pickle.dump(self.meta_models_back, f)
-            with open(f'{path}/use_stacking.pkl', 'wb') as f:
-                pickle.dump(self.use_stacking, f)
-            print(f"✅ 模型已保存到 {path} (含Stacking元学习器)")
-        else:
-            print(f"✅ 模型已保存到 {path}")
+        with open(f'{path}/ensemble_weights.pkl', 'wb') as f:
+            pickle.dump({'rf_weight': self.rf_weight, 'xgb_weight': self.xgb_weight}, f)
+        
+        print(f"✅ 模型已保存到 {path} (含加权集成策略)")
     
     def load_models(self, path='models'):
         with open(f'{path}/rf_front.pkl', 'rb') as f:
@@ -450,19 +383,16 @@ class LotteryPredictor:
         with open(f'{path}/label_encoders_back.pkl', 'rb') as f:
             self.label_encoders_back = pickle.load(f)
         
-        if os.path.exists(f'{path}/meta_front.pkl'):
-            with open(f'{path}/meta_front.pkl', 'rb') as f:
-                self.meta_models_front = pickle.load(f)
-            with open(f'{path}/meta_back.pkl', 'rb') as f:
-                self.meta_models_back = pickle.load(f)
-            with open(f'{path}/use_stacking.pkl', 'rb') as f:
-                self.use_stacking = pickle.load(f)
-            print(f"✅ 模型已从 {path} 加载 (含Stacking元学习器)")
+        if os.path.exists(f'{path}/ensemble_weights.pkl'):
+            with open(f'{path}/ensemble_weights.pkl', 'rb') as f:
+                weights = pickle.load(f)
+                self.rf_weight = weights['rf_weight']
+                self.xgb_weight = weights['xgb_weight']
+            print(f"✅ 模型已从 {path} 加载 (RF权重={self.rf_weight}, XGBoost权重={self.xgb_weight})")
         else:
-            self.meta_models_front = []
-            self.meta_models_back = []
-            self.use_stacking = False
-            print(f"✅ 模型已从 {path} 加载")
+            self.rf_weight = 0.4
+            self.xgb_weight = 0.6
+            print(f"✅ 模型已从 {path} 加载 (使用默认权重)")
 
 if __name__ == "__main__":
     from database import Database
