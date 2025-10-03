@@ -81,11 +81,13 @@ def predict():
                 predictor = LotteryPredictor()
                 predictor.train_random_forest(df_features)
                 predictor.train_xgboost(df_features)
+                predictor.train_stacking(df_features)
                 predictor.save_models()
         else:
             print("首次训练模型...")
             predictor.train_random_forest(df_features)
             predictor.train_xgboost(df_features)
+            predictor.train_stacking(df_features)
             predictor.save_models()
         
         feature_cols = ['odd_count', 'even_count', 'large_count', 'small_count', 
