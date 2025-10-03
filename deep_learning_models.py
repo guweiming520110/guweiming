@@ -277,26 +277,44 @@ class DeepLearningPredictor:
             return False
 
 if __name__ == "__main__":
-    from database import Database
+    print("🚀 开始深度学习模型训练...")
+    
     from feature_engineering import FeatureEngineer
+    import os
     
-    db = Database()
-    data = db.get_all_data()
+    print("📊 加载历史数据...")
+    csv_path = 'lottery_data.csv'
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        print(f"✅ 从CSV获取到 {len(df)} 条历史数据")
+    else:
+        from database import Database
+        db = Database()
+        df = db.get_all_records()
+        print(f"✅ 从数据库获取到 {len(df)} 条历史数据")
     
-    if len(data) > 20:
-        df = pd.DataFrame(data)
+    if len(df) > 20:
+        print("🔧 提取特征...")
         fe = FeatureEngineer(df)
         df = fe.extract_all_features()
+        print(f"✅ 特征提取完成，数据维度: {df.shape}")
         
+        print("🤖 初始化深度学习模型...")
         dl_predictor = DeepLearningPredictor(sequence_length=10)
+        
+        print("🏋️  开始训练深度学习模型（这将需要10-20分钟）...")
         dl_predictor.train_models(df, epochs=30, verbose=1)
+        
+        print("💾 保存模型...")
         dl_predictor.save_models()
         
+        print("🔮 测试预测...")
         probs = dl_predictor.predict_with_probabilities(df)
         print("\n预测概率示例:")
         print("前区LSTM Top5:", sorted(probs['front_lstm'].items(), 
                                       key=lambda x: x[1], reverse=True)[:5])
         print("前区Transformer Top5:", sorted(probs['front_transformer'].items(),
                                              key=lambda x: x[1], reverse=True)[:5])
+        print("\n✅ 深度学习训练完成！")
     else:
-        print("数据不足，需要至少20条历史数据")
+        print(f"❌ 数据不足，需要至少20条历史数据，当前只有{len(df)}条")
