@@ -19,9 +19,13 @@ class LotteryPredictor:
         self.label_encoders_front = []
         self.label_encoders_back = []
         
-        self.rf_weight = 0.4
-        self.xgb_weight = 0.6
-        self.use_stacking = True
+        self.rf_weight = 0.2
+        self.xgb_weight = 0.2
+        self.lstm_weight = 0.3
+        self.transformer_weight = 0.3
+        
+        self.dl_predictor = None
+        self.use_deep_learning = False
         
     def prepare_data(self, df):
         base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
@@ -111,14 +115,23 @@ class LotteryPredictor:
         print("✅ XGBoost模型训练完成")
     
     def train_stacking(self, df):
-        """使用加权平均集成RF和XGBoost（针对稀疏彩票数据优化）"""
-        print(f"开始配置集成策略（加权平均），数据量: {len(df)}条")
+        """训练深度学习模型并配置四模型集成策略"""
+        print(f"开始训练深度学习模型并配置集成策略，数据量: {len(df)}条")
         
-        self.rf_weight = 0.4
-        self.xgb_weight = 0.6
-        self.use_stacking = True
+        self.full_df = df.copy()
         
-        print(f"✅ 集成策略配置完成（RF权重={self.rf_weight}, XGBoost权重={self.xgb_weight}）")
+        try:
+            from deep_learning_models import DeepLearningPredictor
+            self.dl_predictor = DeepLearningPredictor(sequence_length=10)
+            self.dl_predictor.train_models(df, epochs=30, batch_size=32, verbose=0)
+            self.dl_predictor.save_models()
+            self.use_deep_learning = True
+            print(f"✅ 深度学习模型训练完成")
+        except Exception as e:
+            print(f"⚠️  深度学习模型训练失败: {e}，使用传统模型")
+            self.use_deep_learning = False
+        
+        print(f"✅ 集成策略配置完成（RF={self.rf_weight}, XGB={self.xgb_weight}, LSTM={self.lstm_weight}, Transformer={self.transformer_weight}）")
     
     def validate_models(self, df):
         """验证模型是否与当前数据匹配"""
@@ -200,6 +213,32 @@ class LotteryPredictor:
                 if num not in back_proba_dict:
                     back_proba_dict[num] = []
                 back_proba_dict[num].append(prob * self.xgb_weight)
+        
+        if self.use_deep_learning and self.dl_predictor:
+            try:
+                dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
+                
+                for num, prob in dl_probs['front_lstm'].items():
+                    if num not in front_proba_dict:
+                        front_proba_dict[num] = []
+                    front_proba_dict[num].append(prob * self.lstm_weight)
+                
+                for num, prob in dl_probs['front_transformer'].items():
+                    if num not in front_proba_dict:
+                        front_proba_dict[num] = []
+                    front_proba_dict[num].append(prob * self.transformer_weight)
+                
+                for num, prob in dl_probs['back_lstm'].items():
+                    if num not in back_proba_dict:
+                        back_proba_dict[num] = []
+                    back_proba_dict[num].append(prob * self.lstm_weight)
+                
+                for num, prob in dl_probs['back_transformer'].items():
+                    if num not in back_proba_dict:
+                        back_proba_dict[num] = []
+                    back_proba_dict[num].append(prob * self.transformer_weight)
+            except Exception as e:
+                print(f"⚠️  深度学习预测失败: {e}")
         
         for num in front_proba_dict:
             front_proba_dict[num] = np.mean(front_proba_dict[num])
@@ -362,10 +401,19 @@ class LotteryPredictor:
         with open(f'{path}/label_encoders_back.pkl', 'wb') as f:
             pickle.dump(self.label_encoders_back, f)
         
+        weights_dict = {
+            'rf_weight': self.rf_weight,
+            'xgb_weight': self.xgb_weight,
+            'lstm_weight': self.lstm_weight,
+            'transformer_weight': self.transformer_weight
+        }
         with open(f'{path}/ensemble_weights.pkl', 'wb') as f:
-            pickle.dump({'rf_weight': self.rf_weight, 'xgb_weight': self.xgb_weight}, f)
+            pickle.dump(weights_dict, f)
         
-        print(f"✅ 模型已保存到 {path} (含加权集成策略)")
+        model_info = f"RF={self.rf_weight}, XGB={self.xgb_weight}"
+        if self.use_deep_learning:
+            model_info += f", LSTM={self.lstm_weight}, Transformer={self.transformer_weight}"
+        print(f"✅ 模型已保存到 {path} ({model_info})")
     
     def load_models(self, path='models'):
         with open(f'{path}/rf_front.pkl', 'rb') as f:
@@ -386,13 +434,27 @@ class LotteryPredictor:
         if os.path.exists(f'{path}/ensemble_weights.pkl'):
             with open(f'{path}/ensemble_weights.pkl', 'rb') as f:
                 weights = pickle.load(f)
-                self.rf_weight = weights['rf_weight']
-                self.xgb_weight = weights['xgb_weight']
-            print(f"✅ 模型已从 {path} 加载 (RF权重={self.rf_weight}, XGBoost权重={self.xgb_weight})")
+                self.rf_weight = weights.get('rf_weight', 0.2)
+                self.xgb_weight = weights.get('xgb_weight', 0.2)
+                self.lstm_weight = weights.get('lstm_weight', 0.3)
+                self.transformer_weight = weights.get('transformer_weight', 0.3)
+            print(f"✅ 模型已从 {path} 加载 (RF={self.rf_weight}, XGB={self.xgb_weight}, LSTM={self.lstm_weight}, Transformer={self.transformer_weight})")
         else:
-            self.rf_weight = 0.4
-            self.xgb_weight = 0.6
             print(f"✅ 模型已从 {path} 加载 (使用默认权重)")
+        
+        if os.path.exists(f'{path}/dl_config.pkl'):
+            try:
+                from deep_learning_models import DeepLearningPredictor
+                self.dl_predictor = DeepLearningPredictor()
+                if self.dl_predictor.load_models(path):
+                    self.use_deep_learning = True
+                else:
+                    self.use_deep_learning = False
+            except Exception as e:
+                print(f"⚠️  深度学习模型加载失败: {e}")
+                self.use_deep_learning = False
+        else:
+            self.use_deep_learning = False
 
 if __name__ == "__main__":
     from database import Database
