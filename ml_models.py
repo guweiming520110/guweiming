@@ -20,10 +20,10 @@ class LotteryPredictor:
         self.label_encoders_front = []
         self.label_encoders_back = []
         
-        self.rf_weight = 0.2
-        self.xgb_weight = 0.2
-        self.lstm_weight = 0.3
-        self.transformer_weight = 0.3
+        self.rf_weight = 0.4
+        self.xgb_weight = 0.6
+        self.lstm_weight = 0.0
+        self.transformer_weight = 0.0
         
         self.dl_predictor = None
         self.use_deep_learning = False
