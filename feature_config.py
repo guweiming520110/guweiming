@@ -55,11 +55,15 @@ def print_feature_summary():
     """打印特征总结"""
     all_features = get_all_features()
     
+    base_count = 11
+    phase1_adv_count = 15
+    phase4_count = 13
+    
     print("📊 特征配置总结:")
-    print(f"  Phase 1 基础特征: 11个")
-    print(f"  Phase 1 高级特征: 11个")
-    print(f"  Phase 1 小计: 22个")
-    print(f"  Phase 4 时间动态: 13个")
+    print(f"  Phase 1 基础特征: {base_count}个")
+    print(f"  Phase 1 高级特征: {phase1_adv_count}个")
+    print(f"  Phase 1 小计: {base_count + phase1_adv_count}个")
+    print(f"  Phase 4 时间动态: {phase4_count}个")
     print(f"  ================")
     print(f"  总计: {len(all_features)}个")
     
