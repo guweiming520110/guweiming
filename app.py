@@ -74,6 +74,7 @@ def predict():
             try:
                 predictor.load_models()
                 predictor.validate_models(df_features)
+                predictor.full_df = df_features.copy()
                 print("使用已有模型进行预测")
             except Exception as e:
                 print(f"模型验证失败: {e}")
