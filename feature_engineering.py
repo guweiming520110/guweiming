@@ -237,7 +237,8 @@ class FeatureEngineer:
         self.df['pmi_score'] = pmi_scores
     
     def add_temporal_features(self):
-        if 'draw_date' not in self.df.columns:
+        date_col = 'date' if 'date' in self.df.columns else 'draw_date'
+        if date_col not in self.df.columns:
             return
         
         weekdays = []
@@ -249,11 +250,11 @@ class FeatureEngineer:
         
         for _, row in self.df.iterrows():
             try:
-                if pd.isna(row['draw_date']):
+                if pd.isna(row[date_col]):
                     weekday = 0
                     month = 1
                 else:
-                    date_obj = pd.to_datetime(row['draw_date'])
+                    date_obj = pd.to_datetime(row[date_col])
                     weekday = date_obj.weekday()
                     month = date_obj.month
             except:
