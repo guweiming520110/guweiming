@@ -622,7 +622,12 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
-                    }
+                    },
+                    body: JSON.stringify({
+                        train_size: 100,
+                        test_size: 20,
+                        step: 20
+                    })
                 });
                 const data = await response.json();
                 
