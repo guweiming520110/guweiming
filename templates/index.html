@@ -246,6 +246,20 @@
         </div>
         
         <div class="card">
+            <h2>📊 模型评估</h2>
+            <p style="margin-bottom: 15px; color: #666;">评估AI模型的预测准确率和性能指标（需要较长时间运行）</p>
+            <button class="button" onclick="runEvaluation()">运行模型评估</button>
+            <button class="button" onclick="loadEvaluationReport()" style="margin-left: 10px; background: #28a745;">查看最新报告</button>
+            <div id="evalLoading" class="loading">评估运行中，预计需要5-10分钟...</div>
+            <div id="evalError" class="error"></div>
+            <div id="evalSuccess" class="success"></div>
+            <div id="evaluationReport" style="display: none; margin-top: 20px;">
+                <h3 style="color: #667eea; margin-bottom: 15px;">评估报告</h3>
+                <div id="reportContent"></div>
+            </div>
+        </div>
+        
+        <div class="card">
             <h2>历史开奖记录</h2>
             <button class="button" onclick="loadHistory()">加载历史数据</button>
             <div id="historyLoading" class="loading">加载中...</div>
@@ -589,6 +603,114 @@
                 error.classList.add('show');
             } finally {
                 loading.classList.remove('show');
+            }
+        }
+        
+        async function runEvaluation() {
+            const loading = document.getElementById('evalLoading');
+            const error = document.getElementById('evalError');
+            const success = document.getElementById('evalSuccess');
+            const report = document.getElementById('evaluationReport');
+            
+            loading.classList.add('show');
+            error.classList.remove('show');
+            success.classList.remove('show');
+            report.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/evaluation/run', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    success.textContent = '✅ 评估完成！请点击"查看最新报告"查看详细结果。';
+                    success.classList.add('show');
+                    setTimeout(() => loadEvaluationReport(), 1000);
+                } else {
+                    error.textContent = '错误：' + (data.error || '评估运行失败');
+                    error.classList.add('show');
+                }
+            } catch (err) {
+                error.textContent = '网络错误：' + err.message;
+                error.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
+            }
+        }
+        
+        async function loadEvaluationReport() {
+            const error = document.getElementById('evalError');
+            const report = document.getElementById('evaluationReport');
+            const content = document.getElementById('reportContent');
+            
+            error.classList.remove('show');
+            
+            try {
+                const response = await fetch('/api/evaluation/report');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const metrics = data.metrics;
+                    const html = `
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px;">📈 性能指标</h4>
+                            
+                            <div style="margin-bottom: 20px;">
+                                <h5 style="margin-bottom: 10px;">前区预测准确率</h5>
+                                <div style="background: white; padding: 15px; border-radius: 5px;">
+                                    <p><strong>Hit-rate@10:</strong> ${(metrics.front_hit_rate_10 * 100).toFixed(2)}%</p>
+                                    <p><strong>Hit-rate@15:</strong> ${(metrics.front_hit_rate_15 * 100).toFixed(2)}%</p>
+                                    <p><strong>平均命中数:</strong> ${metrics.front_avg_hits.toFixed(2)} / 5</p>
+                                </div>
+                            </div>
+                            
+                            <div style="margin-bottom: 20px;">
+                                <h5 style="margin-bottom: 10px;">后区预测准确率</h5>
+                                <div style="background: white; padding: 15px; border-radius: 5px;">
+                                    <p><strong>Hit-rate@5:</strong> ${(metrics.back_hit_rate_5 * 100).toFixed(2)}%</p>
+                                    <p><strong>平均命中数:</strong> ${metrics.back_avg_hits.toFixed(2)} / 2</p>
+                                </div>
+                            </div>
+                            
+                            <div style="margin-bottom: 20px;">
+                                <h5 style="margin-bottom: 10px;">期望收益</h5>
+                                <div style="background: white; padding: 15px; border-radius: 5px;">
+                                    <p><strong>期望收益:</strong> ${metrics.expected_value.toFixed(4)}</p>
+                                    <p style="color: #666; font-size: 0.9em;">（正值表示理论盈利，负值表示理论亏损）</p>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <h5 style="margin-bottom: 10px;">对比随机选号</h5>
+                                <div style="background: white; padding: 15px; border-radius: 5px;">
+                                    <p><strong>AI vs 随机前区:</strong> ${(metrics.front_hit_rate_10 * 100).toFixed(2)}% vs ${(metrics.random_front_hit_rate * 100).toFixed(2)}%</p>
+                                    <p><strong>AI vs 随机后区:</strong> ${(metrics.back_hit_rate_5 * 100).toFixed(2)}% vs ${(metrics.random_back_hit_rate * 100).toFixed(2)}%</p>
+                                    <p style="color: ${metrics.front_hit_rate_10 > metrics.random_front_hit_rate ? '#28a745' : '#dc3545'}; font-weight: bold;">
+                                        ${metrics.front_hit_rate_10 > metrics.random_front_hit_rate ? '✅ AI模型优于随机选号' : '⚠️ AI模型未超过随机基准'}
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 5px;">
+                                <p style="margin: 0; color: #0066cc;">
+                                    <strong>💡 说明：</strong>这些指标基于历史数据的回测验证，使用Walk-forward时间序列验证方法，严格避免数据泄漏。
+                                </p>
+                            </div>
+                        </div>
+                    `;
+                    content.innerHTML = html;
+                    report.style.display = 'block';
+                } else {
+                    error.textContent = '错误：' + (data.error || '暂无评估报告，请先运行评估');
+                    error.classList.add('show');
+                }
+            } catch (err) {
+                error.textContent = '网络错误：' + err.message;
+                error.classList.add('show');
             }
         }
     </script>
