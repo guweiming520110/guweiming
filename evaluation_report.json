@@ -1,0 +1,63 @@
+{
+  "summary": {
+    "total_predictions": 2680,
+    "evaluation_period": "10101 - 9153"
+  },
+  "hit_rate_at_k": {
+    "front_hit_rate@5": 0.817910447761194,
+    "back_hit_rate@5": 0.3074626865671642,
+    "front_hit_rate@10": 0.817910447761194,
+    "back_hit_rate@10": 0.3074626865671642,
+    "front_hit_rate@15": 0.817910447761194,
+    "back_hit_rate@15": 0.3074626865671642
+  },
+  "expected_value": {
+    "total_investment": 5360,
+    "total_prize": 9755,
+    "net_profit": 4395,
+    "expected_value_per_bet": 1.6399253731343284,
+    "roi_percent": 81.99626865671642,
+    "prize_distribution": {
+      "eighth": 61,
+      "sixth": 7,
+      "ninth": 14,
+      "seventh": 16,
+      "fifth": 9,
+      "fourth": 1
+    }
+  },
+  "position_accuracy": {
+    "front": {
+      "position_1": 0.19813432835820896,
+      "position_2": 0.1,
+      "position_3": 0.10111940298507463,
+      "position_4": 0.11716417910447761,
+      "position_5": 0.23694029850746268
+    },
+    "back": {
+      "position_1": 0.12649253731343282,
+      "position_2": 0.12462686567164179
+    }
+  },
+  "baseline_comparison": {
+    "ai_performance": {
+      "front_hits_avg": 1.3473880597014924,
+      "back_hits_avg": 0.32649253731343286
+    },
+    "random_baseline": {
+      "front_hits_avg": 0.7086492537313431,
+      "front_hits_std": 0.023623580776917518,
+      "back_hits_avg": 0.3341417910447761,
+      "back_hits_std": 0.009502332902286501
+    },
+    "improvement_percent": {
+      "front_improvement": 90.13468970818988,
+      "back_improvement": -2.289223897264083
+    }
+  },
+  "overall_accuracy": {
+    "front_avg_hits": 1.3473880597014924,
+    "back_avg_hits": 0.32649253731343286,
+    "perfect_predictions": 0
+  }
+}

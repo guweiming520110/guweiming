@@ -659,7 +659,12 @@
                 const data = await response.json();
                 
                 if (response.ok) {
-                    const metrics = data.metrics;
+                    const hitRate = data.hit_rate_at_k || {};
+                    const ev = data.expected_value || {};
+                    const baseline = data.baseline_comparison || {};
+                    const aiPerf = baseline.ai_performance || {};
+                    const randomBase = baseline.random_baseline || {};
+                    
                     const html = `
                         <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
                             <h4 style="color: #667eea; margin-bottom: 15px;">📈 性能指标</h4>
@@ -667,35 +672,39 @@
                             <div style="margin-bottom: 20px;">
                                 <h5 style="margin-bottom: 10px;">前区预测准确率</h5>
                                 <div style="background: white; padding: 15px; border-radius: 5px;">
-                                    <p><strong>Hit-rate@10:</strong> ${(metrics.front_hit_rate_10 * 100).toFixed(2)}%</p>
-                                    <p><strong>Hit-rate@15:</strong> ${(metrics.front_hit_rate_15 * 100).toFixed(2)}%</p>
-                                    <p><strong>平均命中数:</strong> ${metrics.front_avg_hits.toFixed(2)} / 5</p>
+                                    <p><strong>Hit-rate@5:</strong> ${(hitRate['front_hit_rate@5'] * 100).toFixed(2)}%</p>
+                                    <p><strong>Hit-rate@10:</strong> ${(hitRate['front_hit_rate@10'] * 100).toFixed(2)}%</p>
+                                    <p><strong>Hit-rate@15:</strong> ${(hitRate['front_hit_rate@15'] * 100).toFixed(2)}%</p>
+                                    <p><strong>平均命中数:</strong> ${aiPerf.front_hits_avg ? aiPerf.front_hits_avg.toFixed(2) : '0.00'} / 5</p>
                                 </div>
                             </div>
                             
                             <div style="margin-bottom: 20px;">
                                 <h5 style="margin-bottom: 10px;">后区预测准确率</h5>
                                 <div style="background: white; padding: 15px; border-radius: 5px;">
-                                    <p><strong>Hit-rate@5:</strong> ${(metrics.back_hit_rate_5 * 100).toFixed(2)}%</p>
-                                    <p><strong>平均命中数:</strong> ${metrics.back_avg_hits.toFixed(2)} / 2</p>
+                                    <p><strong>Hit-rate@5:</strong> ${(hitRate['back_hit_rate@5'] * 100).toFixed(2)}%</p>
+                                    <p><strong>Hit-rate@10:</strong> ${(hitRate['back_hit_rate@10'] * 100).toFixed(2)}%</p>
+                                    <p><strong>平均命中数:</strong> ${aiPerf.back_hits_avg ? aiPerf.back_hits_avg.toFixed(2) : '0.00'} / 2</p>
                                 </div>
                             </div>
                             
                             <div style="margin-bottom: 20px;">
-                                <h5 style="margin-bottom: 10px;">期望收益</h5>
+                                <h5 style="margin-bottom: 10px;">期望收益分析</h5>
                                 <div style="background: white; padding: 15px; border-radius: 5px;">
-                                    <p><strong>期望收益:</strong> ${metrics.expected_value.toFixed(4)}</p>
-                                    <p style="color: #666; font-size: 0.9em;">（正值表示理论盈利，负值表示理论亏损）</p>
+                                    <p><strong>每注期望收益:</strong> ${ev.expected_value_per_bet ? ev.expected_value_per_bet.toFixed(4) : '0.0000'}</p>
+                                    <p><strong>投资回报率(ROI):</strong> <span style="color: ${ev.roi_percent > 0 ? '#28a745' : '#dc3545'}; font-weight: bold;">${ev.roi_percent ? ev.roi_percent.toFixed(2) : '0.00'}%</span></p>
+                                    <p><strong>净利润:</strong> ${ev.net_profit || 0} 元</p>
+                                    <p style="color: #666; font-size: 0.9em;">（基于历史数据回测，实际投注风险自负）</p>
                                 </div>
                             </div>
                             
                             <div>
                                 <h5 style="margin-bottom: 10px;">对比随机选号</h5>
                                 <div style="background: white; padding: 15px; border-radius: 5px;">
-                                    <p><strong>AI vs 随机前区:</strong> ${(metrics.front_hit_rate_10 * 100).toFixed(2)}% vs ${(metrics.random_front_hit_rate * 100).toFixed(2)}%</p>
-                                    <p><strong>AI vs 随机后区:</strong> ${(metrics.back_hit_rate_5 * 100).toFixed(2)}% vs ${(metrics.random_back_hit_rate * 100).toFixed(2)}%</p>
-                                    <p style="color: ${metrics.front_hit_rate_10 > metrics.random_front_hit_rate ? '#28a745' : '#dc3545'}; font-weight: bold;">
-                                        ${metrics.front_hit_rate_10 > metrics.random_front_hit_rate ? '✅ AI模型优于随机选号' : '⚠️ AI模型未超过随机基准'}
+                                    <p><strong>AI vs 随机前区:</strong> ${(hitRate['front_hit_rate@10'] * 100).toFixed(2)}% vs ${(randomBase.front_hits_avg / 5 * 100).toFixed(2)}%</p>
+                                    <p><strong>AI vs 随机后区:</strong> ${(hitRate['back_hit_rate@5'] * 100).toFixed(2)}% vs ${(randomBase.back_hits_avg / 2 * 100).toFixed(2)}%</p>
+                                    <p style="color: ${hitRate['front_hit_rate@10'] > (randomBase.front_hits_avg / 5) ? '#28a745' : '#dc3545'}; font-weight: bold;">
+                                        ${hitRate['front_hit_rate@10'] > (randomBase.front_hits_avg / 5) ? '✅ AI模型优于随机选号' : '⚠️ AI模型未超过随机基准'}
                                     </p>
                                 </div>
                             </div>
