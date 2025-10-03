@@ -322,5 +322,95 @@ def scrape_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/evaluation/run', methods=['POST'])
+def run_evaluation():
+    """运行Walk-forward评估系统"""
+    try:
+        from evaluation import LotteryEvaluator
+        
+        df = db.get_all_records()
+        if df.empty:
+            return jsonify({'error': '暂无数据，无法评估'}), 404
+        
+        if len(df) < 150:
+            return jsonify({'error': f'数据量不足：需要至少150条数据才能评估，当前只有{len(df)}条'}), 400
+        
+        data = request.get_json() or {}
+        train_size = data.get('train_size', 100)
+        test_size = data.get('test_size', 20)
+        step = data.get('step', 20)
+        
+        fe = FeatureEngineer(df)
+        df_features = fe.extract_all_features()
+        
+        def predictor_func(train_df):
+            predictor = LotteryPredictor()
+            predictor.train_random_forest(train_df)
+            predictor.train_xgboost(train_df)
+            
+            base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
+                            'front_sum', 'ac_value', 'span', 'max_front_omission', 
+                            'avg_front_omission', 'max_back_omission', 'avg_back_omission']
+            
+            advanced_features = ['max_pair_freq', 'max_triplet_freq', 'pmi_score',
+                               'weekday_sin', 'weekday_cos', 'month_sin', 'month_cos',
+                               'consecutive_count', 'max_consecutive',
+                               'zone1_count', 'zone2_count', 'zone3_count',
+                               'rolling_std', 'rolling_entropy', 'similarity_score']
+            
+            feature_cols = base_features + advanced_features
+            available_cols = [col for col in feature_cols if col in train_df.columns]
+            
+            latest_features = train_df[available_cols].iloc[-1:].values
+            
+            result = predictor.predict_with_probabilities(latest_features, play_type='basic')
+            pred = result['predictions'][0]
+            
+            return {
+                'front': pred['front'],
+                'back': pred['back']
+            }
+        
+        evaluator = LotteryEvaluator()
+        
+        results = evaluator.walk_forward_validation(
+            df_features, 
+            predictor_func, 
+            train_size=train_size, 
+            test_size=test_size, 
+            step=step
+        )
+        
+        predictions_df = pd.DataFrame(results)
+        
+        report = evaluator.generate_evaluation_report(predictions_df)
+        
+        with open('evaluation_report.json', 'w', encoding='utf-8') as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        
+        return jsonify({
+            'success': True,
+            'report': report,
+            'message': '评估完成！报告已保存'
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evaluation/report')
+def get_evaluation_report():
+    """获取最新的评估报告"""
+    try:
+        if os.path.exists('evaluation_report.json'):
+            with open('evaluation_report.json', 'r', encoding='utf-8') as f:
+                report = json.load(f)
+            return jsonify(report)
+        else:
+            return jsonify({'error': '暂无评估报告，请先运行评估'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
