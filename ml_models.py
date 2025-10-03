@@ -115,23 +115,14 @@ class LotteryPredictor:
         print("✅ XGBoost模型训练完成")
     
     def train_stacking(self, df):
-        """训练深度学习模型并配置四模型集成策略"""
-        print(f"开始训练深度学习模型并配置集成策略，数据量: {len(df)}条")
+        """配置集成策略（深度学习模型需单独训练）"""
+        print(f"开始配置集成策略，数据量: {len(df)}条")
         
         self.full_df = df.copy()
         
-        try:
-            from deep_learning_models import DeepLearningPredictor
-            self.dl_predictor = DeepLearningPredictor(sequence_length=10)
-            self.dl_predictor.train_models(df, epochs=30, batch_size=32, verbose=0)
-            self.dl_predictor.save_models()
-            self.use_deep_learning = True
-            print(f"✅ 深度学习模型训练完成")
-        except Exception as e:
-            print(f"⚠️  深度学习模型训练失败: {e}，使用传统模型")
-            self.use_deep_learning = False
-        
-        print(f"✅ 集成策略配置完成（RF={self.rf_weight}, XGB={self.xgb_weight}, LSTM={self.lstm_weight}, Transformer={self.transformer_weight}）")
+        print(f"⚠️  深度学习模型训练耗时较长（10-20分钟），请运行: python deep_learning_models.py")
+        print(f"✅ 集成策略配置完成（RF={self.rf_weight}, XGB={self.xgb_weight}）")
+        print(f"   如需启用深度学习，训练完成后会自动加载LSTM和Transformer模型")
     
     def validate_models(self, df):
         """验证模型是否与当前数据匹配"""
