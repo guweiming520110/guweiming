@@ -3,6 +3,7 @@ import os
 from database import Database
 from feature_engineering import FeatureEngineer
 from ml_models import LotteryPredictor
+from feature_config import get_all_features, get_available_features
 import pandas as pd
 import plotly
 import plotly.graph_objs as go
@@ -91,18 +92,7 @@ def predict():
             predictor.train_stacking(df_features)
             predictor.save_models()
         
-        base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
-                        'front_sum', 'ac_value', 'span', 'max_front_omission', 
-                        'avg_front_omission', 'max_back_omission', 'avg_back_omission']
-        
-        advanced_features = ['max_pair_freq', 'max_triplet_freq', 'pmi_score',
-                           'weekday_sin', 'weekday_cos', 'month_sin', 'month_cos',
-                           'consecutive_count', 'max_consecutive',
-                           'zone1_count', 'zone2_count', 'zone3_count',
-                           'rolling_std', 'rolling_entropy', 'similarity_score']
-        
-        feature_cols = base_features + advanced_features
-        available_cols = [col for col in feature_cols if col in df_features.columns]
+        available_cols = get_available_features(df_features)
         
         if not available_cols:
             available_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
@@ -348,18 +338,7 @@ def run_evaluation():
         predictor.train_xgboost(df_features[:train_size])
         
         def predictor_func(train_df, test_row):
-            base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
-                            'front_sum', 'ac_value', 'span', 'max_front_omission', 
-                            'avg_front_omission', 'max_back_omission', 'avg_back_omission']
-            
-            advanced_features = ['max_pair_freq', 'max_triplet_freq', 'pmi_score',
-                               'weekday_sin', 'weekday_cos', 'month_sin', 'month_cos',
-                               'consecutive_count', 'max_consecutive',
-                               'zone1_count', 'zone2_count', 'zone3_count',
-                               'rolling_std', 'rolling_entropy', 'similarity_score']
-            
-            feature_cols = base_features + advanced_features
-            available_cols = [col for col in feature_cols if col in test_row.index]
+            available_cols = get_available_features(test_row.to_frame().T)
             
             features = test_row[available_cols].values.reshape(1, -1)
             
