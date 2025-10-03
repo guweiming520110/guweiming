@@ -8,6 +8,7 @@ from sklearn.calibration import CalibratedClassifierCV
 import xgboost as xgb
 import pickle
 import os
+from feature_config import get_all_features
 
 class LotteryPredictor:
     def __init__(self):
@@ -28,17 +29,7 @@ class LotteryPredictor:
         self.use_deep_learning = False
         
     def prepare_data(self, df):
-        base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
-                        'front_sum', 'ac_value', 'span', 'max_front_omission', 
-                        'avg_front_omission', 'max_back_omission', 'avg_back_omission']
-        
-        advanced_features = ['max_pair_freq', 'max_triplet_freq', 'pmi_score',
-                           'weekday_sin', 'weekday_cos', 'month_sin', 'month_cos',
-                           'consecutive_count', 'max_consecutive',
-                           'zone1_count', 'zone2_count', 'zone3_count',
-                           'rolling_std', 'rolling_entropy', 'similarity_score']
-        
-        feature_cols = base_features + advanced_features
+        feature_cols = get_all_features()
         available_cols = [col for col in feature_cols if col in df.columns]
         
         if not available_cols:
