@@ -343,11 +343,11 @@ def run_evaluation():
         fe = FeatureEngineer(df)
         df_features = fe.extract_all_features()
         
-        def predictor_func(train_df):
-            predictor = LotteryPredictor()
-            predictor.train_random_forest(train_df)
-            predictor.train_xgboost(train_df)
-            
+        predictor = LotteryPredictor()
+        predictor.train_random_forest(df_features[:train_size])
+        predictor.train_xgboost(df_features[:train_size])
+        
+        def predictor_func(train_df, test_row):
             base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
                             'front_sum', 'ac_value', 'span', 'max_front_omission', 
                             'avg_front_omission', 'max_back_omission', 'avg_back_omission']
@@ -359,11 +359,11 @@ def run_evaluation():
                                'rolling_std', 'rolling_entropy', 'similarity_score']
             
             feature_cols = base_features + advanced_features
-            available_cols = [col for col in feature_cols if col in train_df.columns]
+            available_cols = [col for col in feature_cols if col in test_row.index]
             
-            latest_features = train_df[available_cols].iloc[-1:].values
+            features = test_row[available_cols].values.reshape(1, -1)
             
-            result = predictor.predict_with_probabilities(latest_features, play_type='basic')
+            result = predictor.predict_with_probabilities(features, play_type='basic')
             pred = result['predictions'][0]
             
             return {
