@@ -90,11 +90,19 @@ def predict():
             predictor.train_stacking(df_features)
             predictor.save_models()
         
-        feature_cols = ['odd_count', 'even_count', 'large_count', 'small_count', 
-                       'front_sum', 'ac_value', 'span', 'max_front_omission', 
-                       'avg_front_omission', 'max_back_omission', 'avg_back_omission']
+        base_features = ['odd_count', 'even_count', 'large_count', 'small_count', 
+                        'front_sum', 'ac_value', 'span', 'max_front_omission', 
+                        'avg_front_omission', 'max_back_omission', 'avg_back_omission']
         
+        advanced_features = ['max_pair_freq', 'max_triplet_freq', 'pmi_score',
+                           'weekday_sin', 'weekday_cos', 'month_sin', 'month_cos',
+                           'consecutive_count', 'max_consecutive',
+                           'zone1_count', 'zone2_count', 'zone3_count',
+                           'rolling_std', 'rolling_entropy', 'similarity_score']
+        
+        feature_cols = base_features + advanced_features
         available_cols = [col for col in feature_cols if col in df_features.columns]
+        
         if not available_cols:
             available_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
