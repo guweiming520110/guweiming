@@ -27,6 +27,10 @@ class FeatureEngineer:
         self.add_volatility_features()
         self.add_similarity_features()
         
+        self.add_short_term_momentum()
+        self.add_conditional_gap_features()
+        self.add_transition_features()
+        
         return self.df
     
     def add_number_frequency(self):
@@ -373,6 +377,141 @@ class FeatureEngineer:
             similarity_scores.append(similarity_score)
         
         self.df['similarity_score'] = similarity_scores
+    
+    def add_short_term_momentum(self, windows=[5, 10, 20]):
+        """
+        短期频率动量特征：最近N期的号码出现频率
+        捕捉"热号"和"冷号"的短期趋势
+        """
+        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        back_cols = ['back_1', 'back_2']
+        
+        for window in windows:
+            front_momentum_col = f'front_momentum_{window}'
+            back_momentum_col = f'back_momentum_{window}'
+            
+            front_momentum = []
+            back_momentum = []
+            
+            for idx in range(len(self.df)):
+                start_idx = max(0, idx - window)
+                recent_df = self.df.iloc[start_idx:idx]
+                
+                if len(recent_df) == 0:
+                    front_momentum.append(0)
+                    back_momentum.append(0)
+                    continue
+                
+                front_nums = []
+                back_nums = []
+                
+                for _, row in recent_df.iterrows():
+                    front_nums.extend([row[col] for col in front_cols])
+                    back_nums.extend([row[col] for col in back_cols])
+                
+                current_front = [self.df.iloc[idx][col] for col in front_cols if idx < len(self.df)]
+                current_back = [self.df.iloc[idx][col] for col in back_cols if idx < len(self.df)]
+                
+                front_hit_count = sum(1 for num in current_front if num in front_nums)
+                back_hit_count = sum(1 for num in current_back if num in back_nums)
+                
+                front_momentum.append(front_hit_count / 5.0)
+                back_momentum.append(back_hit_count / 2.0)
+            
+            self.df[front_momentum_col] = front_momentum
+            self.df[back_momentum_col] = back_momentum
+    
+    def add_conditional_gap_features(self):
+        """
+        条件间隔特征：特定条件下号码的出现间隔
+        例如：奇数号码连续不出现的期数、大号连续不出现的期数
+        """
+        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        
+        odd_gap = 0
+        even_gap = 0
+        large_gap = 0
+        small_gap = 0
+        
+        odd_gaps = []
+        even_gaps = []
+        large_gaps = []
+        small_gaps = []
+        
+        for idx, row in self.df.iterrows():
+            front_nums = [row[col] for col in front_cols]
+            
+            has_odd = any(num % 2 == 1 for num in front_nums)
+            has_even = any(num % 2 == 0 for num in front_nums)
+            has_large = any(num > 17 for num in front_nums)
+            has_small = any(num <= 17 for num in front_nums)
+            
+            if has_odd:
+                odd_gap = 0
+            else:
+                odd_gap += 1
+            
+            if has_even:
+                even_gap = 0
+            else:
+                even_gap += 1
+            
+            if has_large:
+                large_gap = 0
+            else:
+                large_gap += 1
+            
+            if has_small:
+                small_gap = 0
+            else:
+                small_gap += 1
+            
+            odd_gaps.append(odd_gap)
+            even_gaps.append(even_gap)
+            large_gaps.append(large_gap)
+            small_gaps.append(small_gap)
+        
+        self.df['odd_gap'] = odd_gaps
+        self.df['even_gap'] = even_gaps
+        self.df['large_gap'] = large_gaps
+        self.df['small_gap'] = small_gaps
+    
+    def add_transition_features(self):
+        """
+        期间转换特征：号码之间的转换概率
+        从上期号码预测本期号码的相关性
+        """
+        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        
+        prev_front_overlap = []
+        prev_back_overlap = []
+        transition_score = []
+        
+        for idx in range(len(self.df)):
+            if idx == 0:
+                prev_front_overlap.append(0)
+                prev_back_overlap.append(0)
+                transition_score.append(0)
+                continue
+            
+            curr_front = set([self.df.iloc[idx][col] for col in front_cols])
+            curr_back = set([self.df.iloc[idx]['back_1'], self.df.iloc[idx]['back_2']])
+            
+            prev_front = set([self.df.iloc[idx-1][col] for col in front_cols])
+            prev_back = set([self.df.iloc[idx-1]['back_1'], self.df.iloc[idx-1]['back_2']])
+            
+            front_overlap = len(curr_front & prev_front)
+            back_overlap = len(curr_back & prev_back)
+            
+            trans_score = (front_overlap / 5.0 + back_overlap / 2.0) / 2.0
+            
+            prev_front_overlap.append(front_overlap)
+            prev_back_overlap.append(back_overlap)
+            transition_score.append(trans_score)
+        
+        self.df['prev_front_overlap'] = prev_front_overlap
+        self.df['prev_back_overlap'] = prev_back_overlap
+        self.df['transition_score'] = transition_score
 
 if __name__ == "__main__":
     from database import Database
