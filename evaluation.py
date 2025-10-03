@@ -22,13 +22,13 @@ class LotteryEvaluator:
     
     def walk_forward_validation(self, df, predictor_func, train_size=100, test_size=50, step=10):
         """
-        Walk-forward时间序列验证
+        Walk-forward时间序列验证（修复版：每期独立预测）
         
         参数:
             df: 历史数据
-            predictor_func: 预测函数 func(train_df) -> predictions
+            predictor_func: 预测函数 func(train_df, test_row) -> predictions
             train_size: 初始训练集大小
-            test_size: 测试集大小
+            test_size: 每次评估的测试期数
             step: 滑动步长
         
         返回:
@@ -44,9 +44,9 @@ class LotteryEvaluator:
             train_df = df.iloc[i:i+train_size]
             test_df = df.iloc[i+train_size:i+train_size+test_size]
             
-            predictions = predictor_func(train_df)
-            
             for idx, row in test_df.iterrows():
+                predictions = predictor_func(train_df, row)
+                
                 actual_front = set([row['front_1'], row['front_2'], row['front_3'], 
                                    row['front_4'], row['front_5']])
                 actual_back = set([row['back_1'], row['back_2']])
@@ -141,7 +141,7 @@ class LotteryEvaluator:
     
     def calculate_per_position_accuracy(self, predictions_df):
         """
-        计算每个位置的预测准确率
+        计算每个位置的预测准确率（修复版：匹配排序后的位置）
         
         返回:
             各位置准确率统计
@@ -152,22 +152,20 @@ class LotteryEvaluator:
         }
         
         for _, row in predictions_df.iterrows():
-            pred_front = row['predicted_front'][:5]
-            pred_back = row['predicted_back'][:2]
-            actual_front = row['actual_front']
-            actual_back = row['actual_back']
+            pred_front = sorted(row['predicted_front'][:5])
+            pred_back = sorted(row['predicted_back'][:2])
+            actual_front = sorted(row['actual_front'])
+            actual_back = sorted(row['actual_back'])
             
-            for i, num in enumerate(pred_front, 1):
-                if i <= len(pred_front):
-                    position_stats['front_positions'][i]['total'] += 1
-                    if num in actual_front:
-                        position_stats['front_positions'][i]['correct'] += 1
+            for i in range(min(len(pred_front), len(actual_front))):
+                position_stats['front_positions'][i+1]['total'] += 1
+                if i < len(pred_front) and i < len(actual_front) and pred_front[i] == actual_front[i]:
+                    position_stats['front_positions'][i+1]['correct'] += 1
             
-            for i, num in enumerate(pred_back, 1):
-                if i <= len(pred_back):
-                    position_stats['back_positions'][i]['total'] += 1
-                    if num in actual_back:
-                        position_stats['back_positions'][i]['correct'] += 1
+            for i in range(min(len(pred_back), len(actual_back))):
+                position_stats['back_positions'][i+1]['total'] += 1
+                if i < len(pred_back) and i < len(actual_back) and pred_back[i] == actual_back[i]:
+                    position_stats['back_positions'][i+1]['correct'] += 1
         
         position_accuracy = {
             'front': {},

@@ -222,6 +222,29 @@
   - 支持CPU和GPU训练（TensorFlow自动检测）
   - 模块化设计，易于扩展和维护
 
+**2025-10-03 Phase 3 MLOps评估系统**：
+- **核心评估框架（evaluation.py）**：
+  - Walk-forward时间序列验证（严格避免数据泄漏）
+  - Hit-rate@k指标（Top-k候选命中率）
+  - 期望收益（Expected Value）计算
+  - Per-position准确率（排序后位置匹配）
+  - 随机基准对比（100次蒙特卡洛模拟）
+  - 自动化JSON报告生成
+- **API集成**：
+  - `/api/evaluation/run`：执行Walk-forward评估
+  - `/api/evaluation/report`：获取最新评估报告
+- **关键修复（Architect审查）**：
+  - 修复Walk-forward逻辑：每期独立预测，避免复用预测结果
+  - 修复Per-position准确率：正确匹配排序后的位置，而非简单成员检查
+  - 优化训练策略：在窗口级别训练模型，而非每期重训
+- **技术限制**：
+  - 完整Walk-forward评估需要长时间运行（CPU环境下XGBoost训练慢）
+  - 建议在后台或GPU环境执行完整评估
+- **评估洞察**：
+  - 初次测试发现100%命中率（数据泄漏警示）
+  - 实施严格时间序列分割后符合真实场景
+  - 为后续模型优化提供科学依据
+
 ## 注意事项
 
 ⚠️ **免责声明**：
