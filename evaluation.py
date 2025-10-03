@@ -184,7 +184,7 @@ class LotteryEvaluator:
         
         return position_accuracy
     
-    def random_baseline_comparison(self, predictions_df, n_simulations=1000):
+    def random_baseline_comparison(self, predictions_df, n_simulations=100):
         """
         与随机选号基准对比
         
