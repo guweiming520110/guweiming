@@ -8,17 +8,21 @@ class LotteryEvaluator:
     """大乐透预测评估系统 - Walk-forward验证 + 多维度指标"""
     
     def __init__(self):
-        self.prize_structure = {
-            'first': {'front': 5, 'back': 2, 'prize': 10000000},
-            'second': {'front': 5, 'back': 1, 'prize': 500000},
-            'third': {'front': 5, 'back': 0, 'prize': 10000},
-            'fourth': {'front': 4, 'back': 2, 'prize': 3000},
-            'fifth': {'front': 4, 'back': 1, 'prize': 300},
-            'sixth': {'front': 3, 'back': 2, 'prize': 200},
-            'seventh': {'front': 4, 'back': 0, 'prize': 100},
-            'eighth': {'front': 3, 'back': 1, 'prize': 15},
-            'ninth': {'front': 2, 'back': 2, 'prize': 10}
-        }
+        self.prize_structure = [
+            {'name': 'first', 'front': 5, 'back': 2, 'prize': 10000000},
+            {'name': 'second', 'front': 5, 'back': 1, 'prize': 500000},
+            {'name': 'third', 'front': 5, 'back': 0, 'prize': 10000},
+            {'name': 'fourth', 'front': 4, 'back': 2, 'prize': 3000},
+            {'name': 'fifth', 'front': 4, 'back': 1, 'prize': 300},
+            {'name': 'sixth', 'front': 3, 'back': 2, 'prize': 200},
+            {'name': 'seventh', 'front': 4, 'back': 0, 'prize': 100},
+            {'name': 'eighth', 'front': 3, 'back': 1, 'prize': 15},
+            {'name': 'eighth', 'front': 2, 'back': 2, 'prize': 15},
+            {'name': 'ninth', 'front': 3, 'back': 0, 'prize': 5},
+            {'name': 'ninth', 'front': 2, 'back': 1, 'prize': 5},
+            {'name': 'ninth', 'front': 1, 'back': 2, 'prize': 5},
+            {'name': 'ninth', 'front': 0, 'back': 2, 'prize': 5}
+        ]
     
     def walk_forward_validation(self, df, predictor_func, train_size=100, test_size=50, step=10):
         """
@@ -120,11 +124,11 @@ class LotteryEvaluator:
             front_hits = row['front_hits']
             back_hits = row['back_hits']
             
-            for prize_name, criteria in self.prize_structure.items():
-                if (front_hits >= criteria['front'] and 
-                    back_hits >= criteria['back']):
-                    prize_distribution[prize_name] += 1
-                    total_prize += criteria['prize']
+            for prize_info in self.prize_structure:
+                if (front_hits == prize_info['front'] and 
+                    back_hits == prize_info['back']):
+                    prize_distribution[prize_info['name']] += 1
+                    total_prize += prize_info['prize']
                     break
         
         expected_value = (total_prize - total_investment) / len(predictions_df)
