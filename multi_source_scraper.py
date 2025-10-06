@@ -229,8 +229,62 @@ class MultiSourceScraper:
         
         return merged_df
     
+    def scrape_latest_updates(self, latest_period=None) -> Dict:
+        """只获取最新数据（增量更新）"""
+        print(f"\n========== 增量更新采集开始 ==========")
+        if latest_period:
+            print(f"数据库最新期号: {latest_period}")
+            print(f"只获取最近50条并过滤已存在数据")
+        else:
+            print(f"数据库为空，获取最近50条历史数据")
+        
+        all_dataframes = []
+        successful_sources = []
+        
+        # 只采集最近50条（速度快）
+        limit = 50
+        
+        # 1. 500彩票网
+        df_500, source_500 = self.scrape_500_com(limit)
+        if not df_500.empty:
+            all_dataframes.append(df_500)
+            successful_sources.append(source_500)
+        
+        time.sleep(0.5)
+        
+        # 2. 体彩官网（官方源，优先级高）
+        df_gov, source_gov = self.scrape_lottery_gov_cn(limit)
+        if not df_gov.empty:
+            all_dataframes.append(df_gov)
+            successful_sources.append(source_gov)
+        
+        # 合并并去重
+        final_df = self.merge_and_deduplicate(all_dataframes)
+        
+        # 如果有最新期号，只保留更新的数据
+        if latest_period and not final_df.empty:
+            latest_period_int = int(latest_period)
+            final_df['period_int'] = final_df['period'].astype(int)
+            final_df = final_df[final_df['period_int'] > latest_period_int]
+            final_df = final_df.drop('period_int', axis=1)
+            print(f"过滤后新增数据: {len(final_df)} 条")
+        
+        # 移除source列
+        if 'source' in final_df.columns:
+            final_df = final_df.drop('source', axis=1)
+        
+        print(f"\n========== 采集完成 ==========")
+        print(f"总计获取: {len(final_df)} 条新数据")
+        print(f"数据源: {', '.join(successful_sources)}")
+        
+        return {
+            'dataframe': final_df,
+            'sources': successful_sources,
+            'total_count': len(final_df)
+        }
+    
     def scrape_all_sources(self, limit=500) -> Dict:
-        """从所有数据源采集数据"""
+        """从所有数据源采集数据（全量采集）"""
         print(f"\n========== 多数据源采集开始 ==========")
         print(f"目标数量: {limit}条")
         

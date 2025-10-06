@@ -13,14 +13,14 @@
   },
   "expected_value": {
     "total_investment": 5360,
-    "total_prize": 9755,
-    "net_profit": 4395,
-    "expected_value_per_bet": 1.6399253731343284,
-    "roi_percent": 81.99626865671642,
+    "total_prize": 12115,
+    "net_profit": 6755,
+    "expected_value_per_bet": 2.5205223880597014,
+    "roi_percent": 126.02611940298507,
     "prize_distribution": {
-      "eighth": 61,
+      "eighth": 75,
+      "ninth": 458,
       "sixth": 7,
-      "ninth": 14,
       "seventh": 16,
       "fifth": 9,
       "fourth": 1
@@ -45,14 +45,14 @@
       "back_hits_avg": 0.32649253731343286
     },
     "random_baseline": {
-      "front_hits_avg": 0.7143507462686567,
-      "front_hits_std": 0.025802686401401525,
-      "back_hits_avg": 0.3351119402985075,
-      "back_hits_std": 0.011231343283582093
+      "front_hits_avg": 0.7219402985074624,
+      "front_hits_std": 0.024778872801510417,
+      "back_hits_avg": 0.33298880597014935,
+      "back_hits_std": 0.009653021133153292
     },
     "improvement_percent": {
-      "front_improvement": 88.61715575149127,
-      "back_improvement": -2.5720966484801258
+      "front_improvement": 86.63427744469718,
+      "back_improvement": -1.9508970092222384
     }
   },
   "overall_accuracy": {
