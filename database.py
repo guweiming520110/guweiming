@@ -35,6 +35,13 @@ class PredictionRecord(Base):
     front_probabilities = Column(String(1000))
     back_probabilities = Column(String(500))
     
+    # 胆拖相关字段
+    front_dan = Column(String(50))
+    front_tuo = Column(String(200))
+    back_dan = Column(String(20))
+    back_tuo = Column(String(50))
+    combination_count = Column(Integer)
+    
     actual_front = Column(String(100))
     actual_back = Column(String(50))
     
