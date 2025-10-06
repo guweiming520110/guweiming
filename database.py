@@ -235,13 +235,13 @@ class Database:
         """获取所有预测记录及其对比结果"""
         session = self.get_session()
         try:
-            predictions = session.query(PredictionRecord).order_by(PredictionRecord.prediction_date.desc()).all()
+            predictions = session.query(PredictionRecord).order_by(PredictionRecord.id.desc()).all()
             results = []
             for pred in predictions:
-                results.append({
+                result = {
                     'id': pred.id,
-                    'period': pred.period,
-                    'prediction_date': pred.prediction_date.strftime('%Y-%m-%d %H:%M:%S') if pred.prediction_date else None,
+                    'period': pred.target_period,
+                    'prediction_date': pred.predict_time,
                     'play_type': pred.play_type,
                     'front_numbers': pred.front_numbers,
                     'back_numbers': pred.back_numbers,
@@ -252,13 +252,24 @@ class Database:
                     'match_level': pred.match_level,
                     'is_matched': pred.is_matched,
                     'front_probabilities': pred.front_probabilities,
-                    'back_probabilities': pred.back_probabilities,
-                    'front_dan': pred.front_dan,
-                    'front_tuo': pred.front_tuo,
-                    'back_dan': pred.back_dan,
-                    'back_tuo': pred.back_tuo,
-                    'combination_count': pred.combination_count
-                })
+                    'back_probabilities': pred.back_probabilities
+                }
+                
+                # 胆拖相关字段（如果存在）
+                if hasattr(pred, 'front_dan'):
+                    result['front_dan'] = pred.front_dan
+                    result['front_tuo'] = pred.front_tuo
+                    result['back_dan'] = pred.back_dan
+                    result['back_tuo'] = pred.back_tuo
+                    result['combination_count'] = pred.combination_count
+                else:
+                    result['front_dan'] = None
+                    result['front_tuo'] = None
+                    result['back_dan'] = None
+                    result['back_tuo'] = None
+                    result['combination_count'] = None
+                
+                results.append(result)
             return results
         finally:
             session.close()
@@ -325,30 +336,40 @@ class Database:
             }
             
             for pred in all_predictions:
-                if pred.play_type == 'dantuo' and pred.actual_front is not None:
+                # 只处理胆拖推荐且有胆拖字段的记录
+                if pred.play_type == 'dantuo' and pred.actual_front is not None and hasattr(pred, 'front_dan'):
                     dantuo_stats['total'] += 1
                     
                     if pred.front_dan and pred.actual_front:
-                        front_dan_list = list(map(int, pred.front_dan.split(',')))
-                        actual_front_list = list(map(int, pred.actual_front.split(',')))
-                        if set(front_dan_list).issubset(set(actual_front_list)):
-                            dantuo_stats['front_dan_full_hit'] += 1
+                        try:
+                            front_dan_list = list(map(int, pred.front_dan.split(',')))
+                            actual_front_list = list(map(int, pred.actual_front.split(',')))
+                            if set(front_dan_list).issubset(set(actual_front_list)):
+                                dantuo_stats['front_dan_full_hit'] += 1
+                        except:
+                            pass
                     
                     if pred.back_dan and pred.actual_back:
-                        back_dan_list = list(map(int, pred.back_dan.split(',')))
-                        actual_back_list = list(map(int, pred.actual_back.split(',')))
-                        if set(back_dan_list).issubset(set(actual_back_list)):
-                            dantuo_stats['back_dan_full_hit'] += 1
+                        try:
+                            back_dan_list = list(map(int, pred.back_dan.split(',')))
+                            actual_back_list = list(map(int, pred.actual_back.split(',')))
+                            if set(back_dan_list).issubset(set(actual_back_list)):
+                                dantuo_stats['back_dan_full_hit'] += 1
+                        except:
+                            pass
                     
                     # 两者都命中
                     if pred.front_dan and pred.back_dan and pred.actual_front and pred.actual_back:
-                        front_dan_list = list(map(int, pred.front_dan.split(',')))
-                        actual_front_list = list(map(int, pred.actual_front.split(',')))
-                        back_dan_list = list(map(int, pred.back_dan.split(',')))
-                        actual_back_list = list(map(int, pred.actual_back.split(',')))
-                        if (set(front_dan_list).issubset(set(actual_front_list)) and 
-                            set(back_dan_list).issubset(set(actual_back_list))):
-                            dantuo_stats['both_dan_full_hit'] += 1
+                        try:
+                            front_dan_list = list(map(int, pred.front_dan.split(',')))
+                            actual_front_list = list(map(int, pred.actual_front.split(',')))
+                            back_dan_list = list(map(int, pred.back_dan.split(',')))
+                            actual_back_list = list(map(int, pred.actual_back.split(',')))
+                            if (set(front_dan_list).issubset(set(actual_front_list)) and 
+                                set(back_dan_list).issubset(set(actual_back_list))):
+                                dantuo_stats['both_dan_full_hit'] += 1
+                        except:
+                            pass
             
             # 计算胆码命中率
             if dantuo_stats['total'] > 0:

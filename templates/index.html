@@ -260,6 +260,27 @@
         </div>
         
         <div class="card">
+            <h2>🎯 预测分析</h2>
+            <p style="margin-bottom: 15px; color: #666;">查看每期AI预测结果与实际开奖号码的对比分析，重点展示胆拖推荐的命中效果</p>
+            <button class="button" onclick="loadPredictionAnalysis()">查看预测分析</button>
+            <button class="button" onclick="loadPredictionStatistics()" style="margin-left: 10px; background: #28a745;">查看统计数据</button>
+            <div id="analysisLoading" class="loading">加载中...</div>
+            <div id="analysisError" class="error"></div>
+            
+            <!-- 统计摘要 -->
+            <div id="predictionStats" style="display: none; margin-top: 20px;">
+                <h3 style="color: #667eea; margin-bottom: 15px;">📈 预测统计摘要</h3>
+                <div id="statsContent"></div>
+            </div>
+            
+            <!-- 预测记录表格 -->
+            <div id="predictionAnalysisTable" style="overflow-x: auto; display: none; margin-top: 20px;">
+                <h3 style="color: #667eea; margin-bottom: 15px;">📋 预测记录详情</h3>
+                <div id="analysisTableContent"></div>
+            </div>
+        </div>
+        
+        <div class="card">
             <h2>历史开奖记录</h2>
             <button class="button" onclick="loadHistory()">加载历史数据</button>
             <div id="historyLoading" class="loading">加载中...</div>
@@ -725,6 +746,242 @@
             } catch (err) {
                 error.textContent = '网络错误：' + err.message;
                 error.classList.add('show');
+            }
+        }
+        
+        async function loadPredictionAnalysis() {
+            const loading = document.getElementById('analysisLoading');
+            const error = document.getElementById('analysisError');
+            const table = document.getElementById('predictionAnalysisTable');
+            const content = document.getElementById('analysisTableContent');
+            
+            loading.classList.add('show');
+            error.classList.remove('show');
+            table.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/predictions/analysis');
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    const predictions = data.predictions;
+                    
+                    if (predictions.length === 0) {
+                        content.innerHTML = '<p style="color: #666;">暂无预测记录，请先生成预测号码。</p>';
+                        table.style.display = 'block';
+                        return;
+                    }
+                    
+                    let html = `
+                        <table style="width: 100%; border-collapse: collapse; background: white;">
+                            <thead>
+                                <tr style="background: #667eea; color: white;">
+                                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">期号</th>
+                                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">玩法</th>
+                                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">预测号码</th>
+                                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">实际开奖</th>
+                                    <th style="padding: 12px; text-align: center; border: 1px solid #ddd;">命中情况</th>
+                                    <th style="padding: 12px; text-align: center; border: 1px solid #ddd;">中奖等级</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+                    
+                    predictions.forEach(pred => {
+                        const playTypeMap = {
+                            'basic': '基础推荐',
+                            'multiple': '多组推荐',
+                            'top_prob': '高概率推荐',
+                            'dantuo': '胆拖推荐'
+                        };
+                        const playType = playTypeMap[pred.play_type] || pred.play_type;
+                        
+                        let predDisplay = '';
+                        if (pred.play_type === 'dantuo' && pred.front_dan) {
+                            predDisplay = `
+                                <div style="font-size: 0.9em;">
+                                    <strong>前区:</strong> 胆${pred.front_dan} 拖${pred.front_tuo}<br>
+                                    <strong>后区:</strong> 胆${pred.back_dan} 拖${pred.back_tuo}
+                                </div>
+                            `;
+                        } else {
+                            predDisplay = `
+                                <div style="font-size: 0.9em;">
+                                    <strong>前区:</strong> ${pred.front_numbers}<br>
+                                    <strong>后区:</strong> ${pred.back_numbers}
+                                </div>
+                            `;
+                        }
+                        
+                        const actualDisplay = pred.actual_front ? `
+                            <div style="font-size: 0.9em;">
+                                <strong>前区:</strong> ${pred.actual_front}<br>
+                                <strong>后区:</strong> ${pred.actual_back}
+                            </div>
+                        ` : '<span style="color: #999;">等待开奖</span>';
+                        
+                        const matchDisplay = pred.actual_front ? `
+                            <div style="font-size: 0.9em;">
+                                前区: <strong style="color: ${pred.front_match_count >= 3 ? '#28a745' : '#666'}">${pred.front_match_count}/5</strong><br>
+                                后区: <strong style="color: ${pred.back_match_count >= 1 ? '#28a745' : '#666'}">${pred.back_match_count}/2</strong>
+                            </div>
+                        ` : '<span style="color: #999;">-</span>';
+                        
+                        const levelColor = {
+                            '一等奖': '#FFD700',
+                            '二等奖': '#C0C0C0',
+                            '三等奖': '#CD7F32',
+                            '未中奖': '#999'
+                        };
+                        const matchLevel = pred.match_level || '等待开奖';
+                        const levelStyle = levelColor[matchLevel] ? `color: ${levelColor[matchLevel]}; font-weight: bold;` : 'color: #667eea;';
+                        
+                        html += `
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 12px; border: 1px solid #ddd;">${pred.period || '待定'}</td>
+                                <td style="padding: 12px; border: 1px solid #ddd;">${playType}</td>
+                                <td style="padding: 12px; border: 1px solid #ddd;">${predDisplay}</td>
+                                <td style="padding: 12px; border: 1px solid #ddd;">${actualDisplay}</td>
+                                <td style="padding: 12px; text-align: center; border: 1px solid #ddd;">${matchDisplay}</td>
+                                <td style="padding: 12px; text-align: center; border: 1px solid #ddd;">
+                                    <span style="${levelStyle}">${matchLevel}</span>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += `
+                            </tbody>
+                        </table>
+                        <p style="margin-top: 15px; color: #666; font-size: 0.9em;">
+                            共 ${predictions.length} 条预测记录，
+                            已验证 ${predictions.filter(p => p.actual_front).length} 条
+                        </p>
+                    `;
+                    
+                    content.innerHTML = html;
+                    table.style.display = 'block';
+                } else {
+                    error.textContent = '错误：' + (data.error || '加载预测分析失败');
+                    error.classList.add('show');
+                }
+            } catch (err) {
+                error.textContent = '网络错误：' + err.message;
+                error.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
+            }
+        }
+        
+        async function loadPredictionStatistics() {
+            const loading = document.getElementById('analysisLoading');
+            const error = document.getElementById('analysisError');
+            const stats = document.getElementById('predictionStats');
+            const content = document.getElementById('statsContent');
+            
+            loading.classList.add('show');
+            error.classList.remove('show');
+            stats.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/predictions/statistics');
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    const st = data.statistics;
+                    
+                    if (st.total_predictions === 0) {
+                        content.innerHTML = '<p style="color: #666;">暂无预测记录，请先生成预测号码。</p>';
+                        stats.style.display = 'block';
+                        return;
+                    }
+                    
+                    let html = `
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                            <!-- 总体统计 -->
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white;">
+                                <h4 style="margin-bottom: 15px;">📊 总体统计</h4>
+                                <p><strong>总预测次数:</strong> ${st.total_predictions} 次</p>
+                                <p><strong>已验证:</strong> ${st.verified_predictions} 次</p>
+                                <p><strong>验证率:</strong> ${(st.verified_predictions / st.total_predictions * 100).toFixed(1)}%</p>
+                            </div>
+                            
+                            <!-- 胆拖推荐统计 -->
+                            <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 20px; border-radius: 10px; color: white;">
+                                <h4 style="margin-bottom: 15px;">🎯 胆拖推荐统计</h4>
+                                <p><strong>胆拖预测次数:</strong> ${st.dantuo_success_rate.total} 次</p>
+                                <p><strong>前区胆码全中率:</strong> ${st.dantuo_success_rate.front_dan_hit_rate.toFixed(1)}%</p>
+                                <p><strong>后区胆码全中率:</strong> ${st.dantuo_success_rate.back_dan_hit_rate.toFixed(1)}%</p>
+                                <p><strong>双区胆码全中率:</strong> ${st.dantuo_success_rate.both_dan_hit_rate.toFixed(1)}%</p>
+                            </div>
+                        </div>
+                        
+                        <!-- 按玩法统计 -->
+                        <div style="margin-top: 20px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px;">🎮 各玩法表现</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                    `;
+                    
+                    const playTypeNames = {
+                        'basic': '基础推荐',
+                        'multiple': '多组推荐',
+                        'top_prob': '高概率推荐',
+                        'dantuo': '胆拖推荐'
+                    };
+                    
+                    for (const [playType, typeStats] of Object.entries(st.by_play_type)) {
+                        const name = playTypeNames[playType] || playType;
+                        const successRate = typeStats.success_rate ? typeStats.success_rate.toFixed(1) : '0.0';
+                        html += `
+                            <div style="background: white; padding: 15px; border-radius: 8px; border: 2px solid #667eea;">
+                                <h5 style="color: #667eea; margin-bottom: 10px;">${name}</h5>
+                                <p style="font-size: 0.9em;">预测: ${typeStats.total} 次</p>
+                                <p style="font-size: 0.9em;">已验证: ${typeStats.verified} 次</p>
+                                <p style="font-size: 0.9em;">命中: ${typeStats.matched} 次</p>
+                                <p style="font-size: 0.9em;"><strong>成功率: ${successRate}%</strong></p>
+                                <p style="font-size: 0.9em;">平均前区命中: ${typeStats.avg_front_match.toFixed(2)}/5</p>
+                                <p style="font-size: 0.9em;">平均后区命中: ${typeStats.avg_back_match.toFixed(2)}/2</p>
+                            </div>
+                        `;
+                    }
+                    
+                    html += `
+                            </div>
+                        </div>
+                        
+                        <!-- 中奖等级分布 -->
+                        <div style="margin-top: 20px;">
+                            <h4 style="color: #667eea; margin-bottom: 15px;">🏆 中奖等级分布</h4>
+                            <div style="background: white; padding: 15px; border-radius: 8px; border: 2px solid #667eea;">
+                    `;
+                    
+                    for (const [level, count] of Object.entries(st.by_match_level)) {
+                        html += `<p style="font-size: 0.9em;"><strong>${level}:</strong> ${count} 次</p>`;
+                    }
+                    
+                    html += `
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 5px;">
+                            <p style="margin: 0; color: #0066cc;">
+                                <strong>💡 说明：</strong>胆拖推荐的胆码全中率是衡量AI预测核心号码准确性的关键指标。
+                                如果胆码全中率较高，说明AI能够较准确地识别出高概率号码。
+                            </p>
+                        </div>
+                    `;
+                    
+                    content.innerHTML = html;
+                    stats.style.display = 'block';
+                } else {
+                    error.textContent = '错误：' + (data.error || '加载统计数据失败');
+                    error.classList.add('show');
+                }
+            } catch (err) {
+                error.textContent = '网络错误：' + err.message;
+                error.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
             }
         }
     </script>
