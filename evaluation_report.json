@@ -1,63 +1,63 @@
 {
   "summary": {
     "total_predictions": 2680,
-    "evaluation_period": "10101 - 9153"
+    "evaluation_period": "10101 - 9152"
   },
   "hit_rate_at_k": {
     "front_hit_rate@5": 0.817910447761194,
-    "back_hit_rate@5": 0.3074626865671642,
+    "back_hit_rate@5": 0.3,
     "front_hit_rate@10": 0.817910447761194,
-    "back_hit_rate@10": 0.3074626865671642,
+    "back_hit_rate@10": 0.3,
     "front_hit_rate@15": 0.817910447761194,
-    "back_hit_rate@15": 0.3074626865671642
+    "back_hit_rate@15": 0.3
   },
   "expected_value": {
     "total_investment": 5360,
-    "total_prize": 12115,
-    "net_profit": 6755,
-    "expected_value_per_bet": 2.5205223880597014,
-    "roi_percent": 126.02611940298507,
+    "total_prize": 12630,
+    "net_profit": 7270,
+    "expected_value_per_bet": 2.712686567164179,
+    "roi_percent": 135.63432835820893,
     "prize_distribution": {
-      "eighth": 75,
-      "ninth": 458,
-      "sixth": 7,
-      "seventh": 16,
-      "fifth": 9,
+      "ninth": 437,
+      "fifth": 14,
+      "eighth": 83,
+      "seventh": 14,
+      "sixth": 3,
       "fourth": 1
     }
   },
   "position_accuracy": {
     "front": {
-      "position_1": 0.19813432835820896,
-      "position_2": 0.1,
-      "position_3": 0.10111940298507463,
-      "position_4": 0.11716417910447761,
-      "position_5": 0.23694029850746268
+      "position_1": 0.19701492537313434,
+      "position_2": 0.10223880597014925,
+      "position_3": 0.10373134328358209,
+      "position_4": 0.12238805970149254,
+      "position_5": 0.24813432835820895
     },
     "back": {
-      "position_1": 0.12649253731343282,
-      "position_2": 0.12462686567164179
+      "position_1": 0.12462686567164179,
+      "position_2": 0.12164179104477611
     }
   },
   "baseline_comparison": {
     "ai_performance": {
-      "front_hits_avg": 1.3473880597014924,
-      "back_hits_avg": 0.32649253731343286
+      "front_hits_avg": 1.3533582089552239,
+      "back_hits_avg": 0.31828358208955226
     },
     "random_baseline": {
-      "front_hits_avg": 0.7219402985074624,
-      "front_hits_std": 0.024778872801510417,
-      "back_hits_avg": 0.33298880597014935,
-      "back_hits_std": 0.009653021133153292
+      "front_hits_avg": 0.7132574626865672,
+      "front_hits_std": 0.024569270903576856,
+      "back_hits_avg": 0.3317388059701492,
+      "back_hits_std": 0.01018715760138934
     },
     "improvement_percent": {
-      "front_improvement": 86.63427744469718,
-      "back_improvement": -1.9508970092222384
+      "front_improvement": 89.74329463832635,
+      "back_improvement": -4.055969225923989
     }
   },
   "overall_accuracy": {
-    "front_avg_hits": 1.3473880597014924,
-    "back_avg_hits": 0.32649253731343286,
+    "front_avg_hits": 1.3533582089552239,
+    "back_avg_hits": 0.31828358208955226,
     "perfect_predictions": 0
   }
 }
