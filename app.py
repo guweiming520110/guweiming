@@ -266,6 +266,31 @@ def verify_predictions():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/predictions/analysis', methods=['GET'])
+def get_prediction_analysis():
+    """获取所有预测记录及其对比结果"""
+    try:
+        predictions = db.get_all_predictions_with_results()
+        return jsonify({
+            'success': True,
+            'predictions': predictions,
+            'total': len(predictions)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/predictions/statistics', methods=['GET'])
+def get_prediction_statistics():
+    """获取预测统计数据"""
+    try:
+        stats = db.get_prediction_statistics()
+        return jsonify({
+            'success': True,
+            'statistics': stats
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/scrape', methods=['POST'])
 def scrape_data():
     try:
