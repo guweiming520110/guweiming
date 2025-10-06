@@ -341,6 +341,7 @@
             const result = document.getElementById('predictionResult');
             const playType = document.getElementById('playTypeSelect').value;
             
+            loading.textContent = '🔄 正在检查数据更新并生成预测...';
             loading.classList.add('show');
             error.classList.remove('show');
             result.style.display = 'none';
@@ -356,6 +357,18 @@
                 const data = await response.json();
                 
                 if (response.ok) {
+                    // 显示预测期号信息
+                    if (data.message) {
+                        const periodInfo = document.createElement('div');
+                        periodInfo.style.cssText = 'background: #fff3cd; padding: 12px; border-radius: 8px; margin-bottom: 15px; color: #856404; border: 1px solid #ffeeba;';
+                        periodInfo.innerHTML = `
+                            <p style="margin: 0; font-weight: bold;">📅 ${data.message}</p>
+                            ${data.data_updated ? `<p style="margin: 5px 0 0 0; font-size: 13px;">✅ ${data.update_message}</p>` : ''}
+                            ${data.duplicate_warning ? `<p style="margin: 5px 0 0 0; font-size: 13px; color: #dc3545;">⚠️ 该期号已有预测记录</p>` : ''}
+                        `;
+                        result.insertBefore(periodInfo, result.firstChild);
+                    }
+                    
                     displayPredictionResult(data.prediction, playType);
                     result.style.display = 'block';
                 } else {
