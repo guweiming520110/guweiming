@@ -46,6 +46,35 @@ The web interface provides clear, interactive elements for user interaction:
 - **Visualization:** Plotly
 ## Recent Changes
 
+**2025-10-06 动态预测期号系统（已完成）**：
+- **数据新鲜度检测**：
+  - 新增ensure_data_fresh()函数：每次预测前自动检查并获取最新开奖数据
+  - 增量更新机制：调用multi_source_scraper增量采集，仅获取新数据
+  - 智能报告：返回updated状态、latest_period、added_count和消息
+- **动态期号计算**：
+  - 预测目标期号 = 数据库最新期号 + 1（在数据更新后动态计算）
+  - 解决了"每次预测同一期"的问题，确保新数据到来后自动推进到下一期
+  - API响应扩展：返回latest_period、target_period、data_updated等元数据
+- **重复预测防护**：
+  - check_duplicate_prediction()方法：按target_period + play_type检查唯一性
+  - 防止同一期号同玩法重复预测，提示用户删除旧记录
+  - duplicate_warning标志：前端可识别并显示警告信息
+- **前端显示优化**：
+  - 显示"正在预测第X期（基于已更新开奖至Y期）"清晰提示
+  - 数据更新时显示"✅ 数据已更新：新增N条记录"
+  - 重复预测时显示"⚠️ 该期号已有预测记录"警告
+  - 加载状态文本："🔄 正在检查数据更新并生成预测..."
+- **测试验证通过**：
+  - ✅ 数据库最新25113期 → 预测25114期（动态计算正确）
+  - ✅ 重复检测生效：成功拦截25114期basic/dantuo重复预测
+  - ✅ API返回完整期号元数据
+  - ✅ 数据新鲜度检测快速响应（无新数据时）
+- **Architect审查通过**：
+  - 动态期号逻辑正确：ensure_data_fresh()增量更新 → 重新计算target_period
+  - 重复检测合理：按期号+玩法强制唯一性，避免重复保存
+  - 前端显示清晰：期号、更新状态、重复警告一目了然
+  - 完全满足用户需求：预测明确期号，新数据自动推进下一期
+
 **2025-10-06 预测验证与分析系统（已完成）**：
 - **数据库架构升级**：
   - PredictionRecord表新增5个胆拖字段：front_dan, front_tuo, back_dan, back_tuo, combination_count
