@@ -86,6 +86,21 @@ The web interface provides clear, interactive elements for user interaction:
   - ✅ 列表展示清晰，便于对比预测结果与实际开奖
   - ✅ 符合用户需求：先预测上一期，然后与开奖号码对比分析
 
+**2025-10-06 胆拖预测专项分析（已完成）**：
+- **用户需求**：预测记录详情只使用胆拖预测的号码进行对比分析，按期数降序排列
+- **实现方案**：
+  - 修改get_all_predictions_with_results()：添加play_type='dantuo'筛选条件
+  - 使用filter(PredictionRecord.play_type == 'dantuo')过滤只返回胆拖预测
+  - 保持期号降序排列（cast(target_period, Integer).desc()）
+- **安全性验证**：
+  - ✅ 统计功能使用独立查询（session.query(PredictionRecord).all()），不受影响
+  - ✅ 只有/api/predictions/analysis使用此方法，修改安全
+  - ✅ 前端无需修改，自动适配胆拖预测显示
+- **测试结果**：
+  - ✅ API返回24条胆拖预测记录，期号严格降序（25114 → 25113）
+  - ✅ 预测分析页面只显示胆拖推荐，不再显示基础/多组/高概率推荐
+  - ✅ 完全符合用户需求：专注胆拖预测效果分析
+
 **2025-10-06 预测验证与分析系统（已完成）**：
 - **数据库架构升级**：
   - PredictionRecord表新增5个胆拖字段：front_dan, front_tuo, back_dan, back_tuo, combination_count

@@ -269,11 +269,11 @@ class Database:
             session.close()
     
     def get_all_predictions_with_results(self):
-        """获取所有预测记录及其对比结果（按期号降序排列）"""
+        """获取所有胆拖预测记录及其对比结果（按期号降序排列）"""
         session = self.get_session()
         try:
             from sqlalchemy import cast, Integer
-            predictions = session.query(PredictionRecord).order_by(cast(PredictionRecord.target_period, Integer).desc()).all()
+            predictions = session.query(PredictionRecord).filter(PredictionRecord.play_type == 'dantuo').order_by(cast(PredictionRecord.target_period, Integer).desc()).all()
             results = []
             for pred in predictions:
                 result = {
