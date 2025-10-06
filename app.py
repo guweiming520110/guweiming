@@ -271,14 +271,12 @@ def scrape_data():
     try:
         from multi_source_scraper import MultiSourceScraper
         
-        data = request.get_json() or {}
-        limit = data.get('limit', 5000)
-        
         old_count = db.get_record_count()
+        latest_period = db.get_latest_period()
         
-        # 使用多数据源采集器
+        # 使用增量更新采集器（只获取最新数据，速度更快）
         scraper = MultiSourceScraper()
-        result = scraper.scrape_all_sources(limit=limit)
+        result = scraper.scrape_latest_updates(latest_period=latest_period)
         
         df = result['dataframe']
         sources = result['sources']
@@ -294,11 +292,11 @@ def scrape_data():
             new_count = db.get_record_count()
             added_count = new_count - old_count
             
-            period_range = f"{df['period'].iloc[0]} 到 {df['period'].iloc[-1]}"
+            period_range = f"{df['period'].iloc[0]} 到 {df['period'].iloc[-1]}" if len(df) > 1 else df['period'].iloc[0]
             
             return jsonify({
                 'success': True,
-                'message': f'成功采集 {len(df)} 条数据，新增 {added_count} 条记录',
+                'message': f'✅ 成功采集 {len(df)} 条新数据，新增 {added_count} 条记录',
                 'scraped_count': len(df),
                 'added_count': added_count,
                 'total_count': new_count,
@@ -307,7 +305,16 @@ def scrape_data():
                 'sources': sources
             })
         else:
-            return jsonify({'error': '数据采集失败'}), 500
+            # 没有新数据
+            return jsonify({
+                'success': True,
+                'message': '✅ 数据已是最新，无需更新',
+                'scraped_count': 0,
+                'added_count': 0,
+                'total_count': old_count,
+                'latest_period': latest_period,
+                'sources': sources
+            })
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
