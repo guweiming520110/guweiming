@@ -120,21 +120,37 @@ def predict():
                     'dan': pred.get('back_dan_probs', {}),
                     'tuo': pred.get('back_tuo_probs', {})
                 })
+                
+                prediction_data = {
+                    'predict_time': predict_time,
+                    'target_period': target_period,
+                    'play_type': play_type,
+                    'front_numbers': front_numbers,
+                    'back_numbers': back_numbers,
+                    'front_probabilities': front_probs,
+                    'back_probabilities': back_probs,
+                    'front_dan': ','.join(map(str, pred['front_dan'])),
+                    'front_tuo': ','.join(map(str, pred['front_tuo'])),
+                    'back_dan': ','.join(map(str, pred['back_dan'])),
+                    'back_tuo': ','.join(map(str, pred['back_tuo'])),
+                    'combination_count': pred.get('combination_count')
+                }
             else:
                 front_numbers = ','.join(map(str, pred['front']))
                 back_numbers = ','.join(map(str, pred['back']))
                 front_probs = json.dumps(pred['front_probs'])
                 back_probs = json.dumps(pred['back_probs'])
+                
+                prediction_data = {
+                    'predict_time': predict_time,
+                    'target_period': target_period,
+                    'play_type': play_type,
+                    'front_numbers': front_numbers,
+                    'back_numbers': back_numbers,
+                    'front_probabilities': front_probs,
+                    'back_probabilities': back_probs
+                }
             
-            prediction_data = {
-                'predict_time': predict_time,
-                'target_period': target_period,
-                'play_type': play_type,
-                'front_numbers': front_numbers,
-                'back_numbers': back_numbers,
-                'front_probabilities': front_probs,
-                'back_probabilities': back_probs
-            }
             db.save_prediction(prediction_data)
         
         return jsonify({
