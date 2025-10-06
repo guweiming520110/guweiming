@@ -161,6 +161,31 @@ class Database:
         finally:
             session.close()
     
+    def check_duplicate_prediction(self, target_period, play_type):
+        """
+        检查是否存在重复预测
+        
+        参数:
+            target_period: 目标期号
+            play_type: 玩法类型
+        
+        返回:
+            PredictionRecord对象（如存在）或None
+        """
+        session = self.get_session()
+        try:
+            existing = session.query(PredictionRecord).filter(
+                PredictionRecord.target_period == target_period,
+                PredictionRecord.play_type == play_type
+            ).first()
+            return existing
+        except Exception as e:
+            session.rollback()
+            print(f"检查重复预测出错: {str(e)}")
+            return None
+        finally:
+            session.close()
+    
     def save_prediction(self, prediction_data):
         """保存预测记录"""
         session = self.get_session()

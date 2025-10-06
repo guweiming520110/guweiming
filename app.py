@@ -12,6 +12,51 @@ import json
 app = Flask(__name__)
 db = Database()
 
+def ensure_data_fresh():
+    """
+    确保数据是最新的，如有新开奖则自动更新
+    
+    返回:
+        dict: {
+            'updated': bool,  # 是否进行了更新
+            'latest_period': str,  # 最新期号
+            'message': str  # 状态消息
+        }
+    """
+    from multi_source_scraper import MultiSourceScraper
+    
+    latest_period = db.get_latest_period()
+    old_count = db.get_record_count()
+    
+    scraper = MultiSourceScraper()
+    result = scraper.scrape_latest_updates(latest_period=latest_period)
+    
+    df = result['dataframe']
+    sources = result['sources']
+    
+    if not df.empty:
+        filename = 'lottery_data.csv'
+        df.to_csv(filename, index=False, encoding='utf-8-sig')
+        db.insert_data_from_csv(filename)
+        
+        new_latest_period = db.get_latest_period()
+        new_count = db.get_record_count()
+        added_count = new_count - old_count
+        
+        return {
+            'updated': True,
+            'latest_period': new_latest_period,
+            'added_count': added_count,
+            'message': f'数据已更新：新增{added_count}条记录，最新期号{new_latest_period}'
+        }
+    else:
+        return {
+            'updated': False,
+            'latest_period': latest_period,
+            'added_count': 0,
+            'message': f'数据已是最新，最新期号{latest_period}'
+        }
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -53,6 +98,9 @@ def get_statistics():
 def predict():
     try:
         from datetime import datetime
+        
+        # 检查并更新数据（确保预测的是最新期号）
+        data_update_info = ensure_data_fresh()
         
         df = db.get_all_records()
         if df.empty:
@@ -108,6 +156,20 @@ def predict():
             target_period = "00001"
         predict_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        # 检查是否已存在相同期号+玩法的预测
+        existing_prediction = db.check_duplicate_prediction(target_period, play_type)
+        if existing_prediction:
+            return jsonify({
+                'prediction': prediction_result,
+                'latest_period': data_update_info['latest_period'],
+                'target_period': target_period,
+                'data_updated': data_update_info['updated'],
+                'update_message': data_update_info['message'],
+                'message': f"第{target_period}期（{play_type}玩法）已有预测记录，如需重新预测请先删除旧记录",
+                'data_count': len(df),
+                'duplicate_warning': True
+            })
+        
         for idx, pred in enumerate(prediction_result['predictions']):
             if play_type == 'dantuo':
                 front_numbers = f"胆:{','.join(map(str, pred['front_dan']))} 拖:{','.join(map(str, pred['front_tuo']))}"
@@ -155,8 +217,11 @@ def predict():
         
         return jsonify({
             'prediction': prediction_result,
+            'latest_period': data_update_info['latest_period'],
             'target_period': target_period,
-            'message': '预测号码仅供参考，彩票开奖是随机的',
+            'data_updated': data_update_info['updated'],
+            'update_message': data_update_info['message'],
+            'message': f"正在预测第{target_period}期（基于已更新开奖至第{data_update_info['latest_period']}期）",
             'data_count': len(df)
         })
     
