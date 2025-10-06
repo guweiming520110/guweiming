@@ -1,288 +1,46 @@
 # 大乐透AI预测系统
 
-一个基于机器学习的中国体育彩票大乐透号码分析和预测系统。
+## Overview
+This project is an AI-powered system designed to analyze and predict numbers for China's "大乐透" (Super Lotto) lottery. Utilizing machine learning algorithms like Random Forest and XGBoost, the system processes historical lottery data, extracts complex features, and generates predictive number combinations. The primary purpose is data analysis and research, acknowledging the inherent randomness of lottery draws. The system provides various prediction modes, including basic recommendations, multiple sets, high-probability selections, and "胆拖" (dare-drag) betting strategies. It features a web interface for data collection, AI prediction, statistical analysis, and viewing historical records.
 
-## 项目概述
-
-本系统使用机器学习算法（随机森林和XGBoost）分析大乐透历史开奖数据，提取特征并生成预测号码。
-
-**重要提示**：彩票开奖具有随机性，本系统仅用于数据分析和学习研究，预测号码仅供参考，不能保证中奖。
-
-## 功能特点
-
-### 1. 数据采集（多数据源）
-- **多渠道采集**：500彩票网、新浪彩票、体彩官网
-- **智能去重**：自动合并多源数据，保留最完整记录
-- **容错机制**：单个数据源失败不影响整体采集
-- 支持大量历史数据采集（500+条）
-- 数据存储到PostgreSQL数据库
-
-### 2. 特征工程（Phase 1已升级至22特征）
-**基础统计特征（6个）**：
-- **号码频率分析**：统计每个号码的出现次数
-- **遗漏值计算**：追踪号码未出现的期数（最大值、平均值）
-- **奇偶比分析**：计算奇数偶数的比例
-- **大小比分析**：统计大号小号的分布
-- **AC值**：算术复杂度指标
-- **和值与跨度**：号码总和与最大最小值差
-
-**高级特征（16个）**：
-- **共现模式（3个）**：号码对频率、号码三元组频率、PMI点互信息
-- **时间周期性（3个）**：星期sin/cos编码、月份sin/cos编码、季节sin/cos编码
-- **连号分析（2个）**：连续号码数量、最大连号跨度
-- **区间密度（3个）**：前1/3密度、中1/3密度、后1/3密度
-- **波动性指标（3个）**：滚动标准差、滚动熵、历史相似度k-NN
-- **遗漏延伸（2个）**：最大前区遗漏、最大后区遗漏
-
-### 3. AI预测模型（最终配置）
-- **随机森林（Random Forest）**：5个前区模型 + 2个后区模型，n_estimators=100
-- **XGBoost**：梯度提升模型，提升预测准确性
-- **加权集成（Weighted Ensemble）**：RF(40%) + XGBoost(60%)加权平均
-- **特征标准化**：使用StandardScaler归一化（39个特征）
-- **模型验证**：自动检测模型与数据不匹配并重新训练
-- **说明**：深度学习模型在CPU环境下训练耗时过长，当前双模型集成已足够强大
-
-### 4. Web界面
-- 数据采集按钮：一键获取最新开奖数据
-- AI预测功能：生成推荐号码
-- 统计分析：展示热门号码和冷门号码
-- 历史记录查看：浏览过往开奖数据
-
-## 技术栈
-
-### 后端
-- **Python 3.11**
-- **Flask**：Web框架
-- **SQLAlchemy**：ORM和数据库操作
-- **PostgreSQL**：数据存储
-
-### 数据处理
-- **pandas**：数据分析和处理
-- **numpy**：数值计算
-- **BeautifulSoup4**：网页解析
-- **requests**：HTTP请求
-
-### 机器学习
-- **scikit-learn**：随机森林、数据预处理
-- **XGBoost**：梯度提升模型
-- **pickle**：模型持久化
-
-### 可视化
-- **Plotly**：交互式图表
-
-## 项目结构
-
-```
-.
-├── app.py                    # Flask主应用
-├── data_scraper.py          # 数据采集模块
-├── database.py              # 数据库操作
-├── feature_engineering.py   # 特征工程
-├── ml_models.py             # 机器学习模型
-├── templates/
-│   └── index.html           # Web前端界面
-└── models/                  # 训练好的模型（运行后生成）
-```
-
-## 使用方法
-
-1. **采集数据**：点击"采集历史开奖数据"按钮，系统会自动从网上获取数据
-2. **选择玩法**：在AI预测区域选择投注玩法：
-   - **基础推荐 (5+2)**：AI推荐一组号码，含概率值
-   - **多组推荐 (3组)**：生成3组不同的号码组合
-   - **高概率推荐 (Top10+Top5)**：显示前区Top10和后区Top5候选号码及概率
-   - **胆拖推荐**：智能生成胆码和拖码组合（前区2胆8拖，后区1胆4拖，共224注）
-3. **AI预测**：点击"生成预测号码"，AI会基于历史数据生成推荐号码
-4. **查看统计**：点击"查看统计数据"查看热门和冷门号码分析
-5. **查看历史**：点击"加载历史数据"浏览最近的开奖记录
-
-## 大乐透规则
-
-- **前区**：从01-35中选择5个号码
-- **后区**：从01-12中选择2个号码
-- **开奖时间**：每周一、三、六晚上
-
-## 技术细节
-
-### 数据流程
-1. 爬虫采集 → 2. 数据清洗 → 3. 存入数据库 → 4. 特征提取 → 5. 模型训练 → 6. 预测生成
-
-### 模型训练
-- 使用全部历史数据训练
-- 每个号码位置独立训练一个模型
-- 预测时综合多个模型的结果
-
-### 预测逻辑
-- 随机森林和XGBoost各输出Top-3候选号码
-- 统计所有候选号码的出现频率
-- 选择频率最高的5个前区号码和2个后区号码
-
-## 用户偏好
-
+## User Preferences
 - 沟通方式：简单、日常用语
 
-## 最近更新
+## System Architecture
+The system employs a robust backend built with Python 3.11 and Flask, using SQLAlchemy for ORM with a PostgreSQL database. Data processing relies on pandas and numpy, while Beautiful Soup 4 and requests handle web scraping from multiple sources (500彩票网, 新浪彩票, 体彩官网) with intelligent deduplication and fault tolerance.
 
-**2025-09-30**：
-- 创建项目基础架构
-- 实现数据采集模块（支持5000+条历史数据）
-- 配置PostgreSQL数据库
-- 开发特征工程系统
-- 构建随机森林和XGBoost模型
-- 创建Flask API和Web界面
-- **重大修复**：
-  - 修复数据采集限制问题（从30条提升到5000条）
-  - 修复XGBoost类别映射错误（使用LabelEncoder解决非连续类别问题）
-  - 添加模型验证机制（自动检测模型与数据不匹配并重新训练）
-  - 修复JSON序列化错误（NumPy类型转换）
-  - 优化数据采集URL（使用正确的带日期接口）
-  - 修复数据库连接问题（使用scoped_session + NullPool）
-  - **修复历史数据排序问题**：period字段varchar导致字典序排序，使用cast to Integer解决
-- **多数据源采集系统**：
-  - 实现3个数据源（500彩票网、新浪彩票、体彩官网）
-  - 智能数据融合和去重（整数排序+完整性评分）
-  - 自动保留最新最完整的数据
-  - 修复API调用Content-Type问题
-  - 前端显示数据来源信息
-- **数据显示优化**：
-  - 支持采集所有历史开奖数据（默认5000条）
-  - 历史数据展示优化：显示最近100条，避免性能问题
-  - 在历史数据底部显示总数统计
-  - API默认limit=100防止大数据传输
-- **智能预测系统升级**：
-  - 新增`predict_with_probabilities`函数，输出每个号码的预测概率
-  - 支持4种预测玩法：
-    - `basic`: 基础5+2推荐
-    - `multiple`: 多组号码推荐（3组）
-    - `top_prob`: 高概率号码推荐（Top10前区+Top5后区）
-    - `dantuo`: 胆拖模式推荐（前区胆2拖8，后区胆1拖4，共224注）
-  - 新增`PredictionRecord`表保存所有预测记录
-  - 预测自动保存到数据库，包含概率值和玩法类型
-  - 胆拖模式自动计算组合数量
-- **预测验证系统**：
-  - 新增`/api/predictions/history`查询历史预测记录
-  - 新增`/api/predictions/verify`自动验证预测结果
-  - 自动计算前区/后区命中数量
-  - 智能判定中奖等级（一等奖~八等奖）
-  - 为后续AI反馈学习提供数据基础
-- **前端界面升级**：
-  - 修复415错误（添加Content-Type: application/json请求头）
-  - 新增玩法选择下拉框，支持4种预测模式切换
-  - 实现多种玩法结果展示：基础5+2（带概率）、多组推荐（3组）、高概率推荐（Top候选+概率）、胆拖推荐（胆码+拖码+组合数）
-  - 优化胆拖模式显示：自动识别front_dan/front_tuo等字段，完整展示胆拖投注策略
-  - **修复JavaScript错误**：修复高概率模式toFixed错误（概率从字典格式正确读取）
-  - **新增投注金额显示**：
-    - 基础推荐：2元（单注）
-    - 多组推荐：6元（3组×2元），每组标注2元
-    - 高概率推荐：提示从候选中自选，单注2元
-    - 胆拖推荐：448元（224注×2元），清晰显示总金额和计算公式
-  - **修复Top推荐数量**：高概率模式正确返回10个前区候选和5个后区候选
-- 配置生产工作流
+**UI/UX Decisions:**
+The web interface provides clear, interactive elements for user interaction:
+- **Data Collection Button:** One-click functionality to fetch the latest lottery data.
+- **AI Prediction Functionality:** Allows users to generate recommended numbers based on chosen play styles (Basic 5+2, Multiple sets, High-probability Top N, Dare-drag).
+- **Statistical Analysis:** Displays hot and cold numbers.
+- **Historical Records:** Browsing of past lottery results.
+- **Prediction Analysis UI**: New section to view predictions vs actual outcomes and visualize statistics like hit rates.
 
-**2025-10-03 Phase 1算法升级**：
-- **特征工程大升级（11→22特征，100%增长）**：
-  - 新增共现模式特征：号码对频率、号码三元组频率、PMI点互信息（修复为使用实际最高频率对）
-  - 新增时间周期性特征：星期几/月份/季节的sin/cos编码（6维）
-  - 新增连号分析特征：连续号码数量、最大连号跨度
-  - 新增区间密度特征：前/中/后1/3区间的号码密度分布
-  - 新增波动性指标：滚动标准差、滚动熵、历史相似度k-NN
-  - 新增遗漏延伸特征：最大前区遗漏、最大后区遗漏
-- **模型架构升级（避免数据泄漏）**：
-  - 放弃复杂Stacking元学习器（存在out-of-fold数据泄漏风险）
-  - 采用加权集成策略：RF(40%) + XGBoost(60%)加权平均
-  - 针对彩票数据稀疏性和类别不平衡优化
-  - 修复类别映射错误（XGBoost unseen labels问题）
-- **代码质量改进**：
-  - 清理冗余Stacking代码，简化模型管道
-  - 添加ensemble_weights.pkl保存集成权重
-  - 优化模型验证逻辑，确保新旧模型兼容性
-  - 训练日志显示22个特征详情
-- **Architect审查通过**：确认无数据泄漏、特征对齐、所有玩法正常
+**Technical Implementations:**
+- **Feature Engineering:** An advanced system with 39 distinct features, including basic statistics (frequency, omissions, odd/even, big/small, AC value, sum, span), advanced patterns (co-occurrence, temporal seasonality, consecutive numbers, interval density, volatility indicators, omission extension), short-term frequency momentum, conditional interval features, and period transition features.
+- **AI Prediction Models:**
+    - **Ensemble Approach:** Weighted integration of Random Forest (40%) and XGBoost (60%) models.
+    - **Deep Learning (Optional):** Integration of Bi-directional LSTM and Transformer models (when available) for further enhancement, forming a four-model ensemble (RF 20%, XGBoost 20%, LSTM 30%, Transformer 30%).
+    - **Model Training:** Independent models for each number position, trained on all historical data.
+    - **Prediction Logic:** Combines outputs from multiple models, prioritizing highest frequency candidates.
+    - **Model Validation:** Automated detection of model-data mismatches and retraining.
+    - **Feature Standardization:** StandardScaler used for feature normalization.
+- **Data Workflow:** Crawler collection → Data cleaning → Database storage → Feature extraction → Model training → Prediction generation.
+- **MLOps Evaluation System:** Includes a walk-forward time-series validation framework, hit-rate@k metrics, expected value calculation, and per-position accuracy, with API endpoints for execution and reporting.
 
-**2025-10-03 Phase 2深度学习架构**：
-- **深度学习模型实现**：
-  - 创建deep_learning_models.py独立模块
-  - 实现双向LSTM模型（捕捉时间序列依赖）
-  - 实现Transformer模型（自注意力机制建模长期依赖）
-  - 使用滑动窗口准备序列数据（sequence_length=10）
-- **四模型集成架构**：
-  - 更新权重配置：RF(20%) + XGBoost(20%) + LSTM(30%) + Transformer(30%)
-  - 延迟加载策略：避免TensorFlow拖慢服务器启动
-  - 深度学习模型作为可选增强功能
-- **训练策略优化**：
-  - 深度学习训练独立于主服务器（python deep_learning_models.py）
-  - 训练14个模型：5前区LSTM + 5前区Transformer + 2后区LSTM + 2后区Transformer
-  - 每个模型30 epochs，batch_size=32
-  - 自动保存为.h5文件，支持加载复用
-- **集成预测逻辑**：
-  - 如存在深度学习模型，自动加载并整合到预测
-  - 加权平均4个模型的概率输出
-  - 保持向后兼容：无深度学习模型时使用RF+XGBoost
-- **架构特点**：
-  - 序列化时间数据（2770条序列 from 2780条历史）
-  - 支持CPU和GPU训练（TensorFlow自动检测）
-  - 模块化设计，易于扩展和维护
+**System Design Choices:**
+- **Modularity:** Clear separation of concerns with dedicated modules for scraping, database, feature engineering, and ML models.
+- **Scalability:** Designed to handle large volumes of historical data and multiple data sources.
+- **Persistence:** Models are persisted using `pickle`.
+- **Database Schema:** `PredictionRecord` table enhanced with 5 "胆拖" fields for detailed betting strategy storage.
 
-**2025-10-03 Phase 3 MLOps评估系统**：
-- **核心评估框架（evaluation.py）**：
-  - Walk-forward时间序列验证（严格避免数据泄漏）
-  - Hit-rate@k指标（Top-k候选命中率）
-  - 期望收益（Expected Value）计算
-  - Per-position准确率（排序后位置匹配）
-  - 随机基准对比（100次蒙特卡洛模拟）
-  - 自动化JSON报告生成
-- **API集成**：
-  - `/api/evaluation/run`：执行Walk-forward评估
-  - `/api/evaluation/report`：获取最新评估报告
-- **关键修复（Architect审查）**：
-  - 修复Walk-forward逻辑：每期独立预测，避免复用预测结果
-  - 修复Per-position准确率：正确匹配排序后的位置，而非简单成员检查
-  - 优化训练策略：在窗口级别训练模型，而非每期重训
-- **技术限制**：
-  - 完整Walk-forward评估需要长时间运行（CPU环境下XGBoost训练慢）
-  - 建议在后台或GPU环境执行完整评估
-- **评估洞察**：
-  - 初次测试发现100%命中率（数据泄漏警示）
-  - 实施严格时间序列分割后符合真实场景
-  - 为后续模型优化提供科学依据
-
-**2025-10-03 Phase 4 时间动态特征（已完成）**：
-- **特征工程升级（26→39特征，50%增长）**：
-  - **短期频率动量（6个）**：
-    - 最近5/10/20期的前区号码出现频率（front_momentum_5/10/20）
-    - 最近5/10/20期的后区号码出现频率（back_momentum_5/10/20）
-    - 捕捉"热号"和"冷号"的短期趋势
-  - **条件间隔特征（4个）**：
-    - 奇数/偶数号码连续不出现期数（odd_gap, even_gap）
-    - 大号/小号连续不出现期数（large_gap, small_gap）
-    - 识别特定条件下的出现模式
-  - **期间转换特征（3个）**：
-    - 与上期前区号码重叠数（prev_front_overlap）
-    - 与上期后区号码重叠数（prev_back_overlap）
-    - 综合转换评分（transition_score）
-    - 利用期间相关性提升预测
-- **代码架构优化**：
-  - 创建feature_config.py统一管理特征配置
-  - ml_models.py使用feature_config.get_all_features()
-  - 支持动态特征匹配和向后兼容
-  - 修复时间特征：支持date和draw_date列名
-- **关键修复（Architect审查通过）**：
-  - 修复add_temporal_features函数：支持'date'列名（原只支持'draw_date'）
-  - 修复缺失4个时间周期特征：weekday_sin/cos, month_sin/cos
-  - 完整39特征验证通过
-- **模型重训练成功**：
-  - ✅ 使用39个特征重新训练RF和XGBoost模型
-  - ✅ 旧模型（35特征）已备份至models_phase1_backup
-  - ✅ 新模型性能：捕捉时间依赖性、号码转换模式、短期动量
-- **测试验证**：
-  - 100条数据测试：39特征全部成功提取
-  - 模型scaler确认：39个特征维度
-  - API预测正常工作（200状态码）
-
-## 注意事项
-
-⚠️ **免责声明**：
-- 本系统仅用于技术研究和数据分析学习
-- 彩票开奖是完全随机的，任何预测都无法保证中奖
-- 请理性购彩，量力而行
-- 切勿沉迷，预防诈骗
+## External Dependencies
+- **Backend Framework:** Flask
+- **Database:** PostgreSQL
+- **ORM:** SQLAlchemy
+- **Data Analysis & Manipulation:** pandas, numpy
+- **Web Scraping:** BeautifulSoup4, requests
+- **Machine Learning:** scikit-learn, XGBoost, pickle
+- **Deep Learning (Optional):** TensorFlow (for LSTM and Transformer models)
+- **Visualization:** Plotly
