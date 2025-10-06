@@ -230,6 +230,145 @@ class Database:
             return False
         finally:
             session.close()
+    
+    def get_all_predictions_with_results(self):
+        """获取所有预测记录及其对比结果"""
+        session = self.get_session()
+        try:
+            predictions = session.query(PredictionRecord).order_by(PredictionRecord.prediction_date.desc()).all()
+            results = []
+            for pred in predictions:
+                results.append({
+                    'id': pred.id,
+                    'period': pred.period,
+                    'prediction_date': pred.prediction_date.strftime('%Y-%m-%d %H:%M:%S') if pred.prediction_date else None,
+                    'play_type': pred.play_type,
+                    'front_numbers': pred.front_numbers,
+                    'back_numbers': pred.back_numbers,
+                    'actual_front': pred.actual_front,
+                    'actual_back': pred.actual_back,
+                    'front_match_count': pred.front_match_count,
+                    'back_match_count': pred.back_match_count,
+                    'match_level': pred.match_level,
+                    'is_matched': pred.is_matched,
+                    'front_probabilities': pred.front_probabilities,
+                    'back_probabilities': pred.back_probabilities,
+                    'front_dan': pred.front_dan,
+                    'front_tuo': pred.front_tuo,
+                    'back_dan': pred.back_dan,
+                    'back_tuo': pred.back_tuo,
+                    'combination_count': pred.combination_count
+                })
+            return results
+        finally:
+            session.close()
+    
+    def get_prediction_statistics(self):
+        """获取预测统计数据"""
+        session = self.get_session()
+        try:
+            all_predictions = session.query(PredictionRecord).all()
+            
+            if not all_predictions:
+                return {
+                    'total_predictions': 0,
+                    'verified_predictions': 0,
+                    'by_play_type': {},
+                    'by_match_level': {},
+                    'dantuo_success_rate': {}
+                }
+            
+            total = len(all_predictions)
+            verified = len([p for p in all_predictions if p.actual_front is not None])
+            
+            # 按玩法统计
+            by_play_type = {}
+            for pred in all_predictions:
+                play_type = pred.play_type or 'basic'
+                if play_type not in by_play_type:
+                    by_play_type[play_type] = {
+                        'total': 0,
+                        'verified': 0,
+                        'matched': 0,
+                        'avg_front_match': 0,
+                        'avg_back_match': 0
+                    }
+                by_play_type[play_type]['total'] += 1
+                if pred.actual_front is not None:
+                    by_play_type[play_type]['verified'] += 1
+                    if pred.is_matched:
+                        by_play_type[play_type]['matched'] += 1
+                    by_play_type[play_type]['avg_front_match'] += (pred.front_match_count or 0)
+                    by_play_type[play_type]['avg_back_match'] += (pred.back_match_count or 0)
+            
+            # 计算平均值
+            for play_type in by_play_type:
+                verified_count = by_play_type[play_type]['verified']
+                if verified_count > 0:
+                    by_play_type[play_type]['avg_front_match'] /= verified_count
+                    by_play_type[play_type]['avg_back_match'] /= verified_count
+                    by_play_type[play_type]['success_rate'] = by_play_type[play_type]['matched'] / verified_count * 100
+            
+            # 按中奖等级统计
+            by_match_level = {}
+            for pred in all_predictions:
+                if pred.match_level:
+                    level = pred.match_level
+                    by_match_level[level] = by_match_level.get(level, 0) + 1
+            
+            # 胆拖推荐成功率（检查胆码是否全部命中）
+            dantuo_stats = {
+                'total': 0,
+                'front_dan_full_hit': 0,
+                'back_dan_full_hit': 0,
+                'both_dan_full_hit': 0
+            }
+            
+            for pred in all_predictions:
+                if pred.play_type == 'dantuo' and pred.actual_front is not None:
+                    dantuo_stats['total'] += 1
+                    
+                    if pred.front_dan and pred.actual_front:
+                        front_dan_list = list(map(int, pred.front_dan.split(',')))
+                        actual_front_list = list(map(int, pred.actual_front.split(',')))
+                        if set(front_dan_list).issubset(set(actual_front_list)):
+                            dantuo_stats['front_dan_full_hit'] += 1
+                    
+                    if pred.back_dan and pred.actual_back:
+                        back_dan_list = list(map(int, pred.back_dan.split(',')))
+                        actual_back_list = list(map(int, pred.actual_back.split(',')))
+                        if set(back_dan_list).issubset(set(actual_back_list)):
+                            dantuo_stats['back_dan_full_hit'] += 1
+                    
+                    # 两者都命中
+                    if pred.front_dan and pred.back_dan and pred.actual_front and pred.actual_back:
+                        front_dan_list = list(map(int, pred.front_dan.split(',')))
+                        actual_front_list = list(map(int, pred.actual_front.split(',')))
+                        back_dan_list = list(map(int, pred.back_dan.split(',')))
+                        actual_back_list = list(map(int, pred.actual_back.split(',')))
+                        if (set(front_dan_list).issubset(set(actual_front_list)) and 
+                            set(back_dan_list).issubset(set(actual_back_list))):
+                            dantuo_stats['both_dan_full_hit'] += 1
+            
+            # 计算胆码命中率
+            if dantuo_stats['total'] > 0:
+                dantuo_stats['front_dan_hit_rate'] = dantuo_stats['front_dan_full_hit'] / dantuo_stats['total'] * 100
+                dantuo_stats['back_dan_hit_rate'] = dantuo_stats['back_dan_full_hit'] / dantuo_stats['total'] * 100
+                dantuo_stats['both_dan_hit_rate'] = dantuo_stats['both_dan_full_hit'] / dantuo_stats['total'] * 100
+            else:
+                dantuo_stats['front_dan_hit_rate'] = 0
+                dantuo_stats['back_dan_hit_rate'] = 0
+                dantuo_stats['both_dan_hit_rate'] = 0
+            
+            return {
+                'total_predictions': total,
+                'verified_predictions': verified,
+                'by_play_type': by_play_type,
+                'by_match_level': by_match_level,
+                'dantuo_success_rate': dantuo_stats
+            }
+        finally:
+            session.close()
 
 if __name__ == "__main__":
     db = Database()
