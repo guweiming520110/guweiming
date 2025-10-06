@@ -262,8 +262,11 @@
         <div class="card">
             <h2>🎯 预测分析</h2>
             <p style="margin-bottom: 15px; color: #666;">查看每期AI预测结果与实际开奖号码的对比分析，重点展示胆拖推荐的命中效果</p>
-            <button class="button" onclick="loadPredictionAnalysis()">查看预测分析</button>
+            <button class="button" onclick="verifyPredictions()" style="background: #ff6b6b;">验证预测结果</button>
+            <button class="button" onclick="loadPredictionAnalysis()" style="margin-left: 10px;">查看预测分析</button>
             <button class="button" onclick="loadPredictionStatistics()" style="margin-left: 10px; background: #28a745;">查看统计数据</button>
+            <div id="verifyLoading" class="loading">验证中...</div>
+            <div id="verifySuccess" class="success"></div>
             <div id="analysisLoading" class="loading">加载中...</div>
             <div id="analysisError" class="error"></div>
             
@@ -746,6 +749,41 @@
             } catch (err) {
                 error.textContent = '网络错误：' + err.message;
                 error.classList.add('show');
+            }
+        }
+        
+        async function verifyPredictions() {
+            const loading = document.getElementById('verifyLoading');
+            const success = document.getElementById('verifySuccess');
+            const error = document.getElementById('analysisError');
+            
+            loading.classList.add('show');
+            success.classList.remove('show');
+            error.classList.remove('show');
+            
+            try {
+                const response = await fetch('/api/predictions/verify', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    success.textContent = `✅ ${data.message}`;
+                    success.classList.add('show');
+                    
+                    setTimeout(() => {
+                        loadPredictionAnalysis();
+                        loadPredictionStatistics();
+                    }, 1000);
+                } else {
+                    error.textContent = '错误：' + (data.error || '验证失败');
+                    error.classList.add('show');
+                }
+            } catch (err) {
+                error.textContent = '网络错误：' + err.message;
+                error.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
             }
         }
         
