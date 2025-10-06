@@ -269,10 +269,11 @@ class Database:
             session.close()
     
     def get_all_predictions_with_results(self):
-        """获取所有预测记录及其对比结果"""
+        """获取所有预测记录及其对比结果（按期号降序排列）"""
         session = self.get_session()
         try:
-            predictions = session.query(PredictionRecord).order_by(PredictionRecord.id.desc()).all()
+            from sqlalchemy import cast, Integer
+            predictions = session.query(PredictionRecord).order_by(cast(PredictionRecord.target_period, Integer).desc()).all()
             results = []
             for pred in predictions:
                 result = {

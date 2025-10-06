@@ -75,6 +75,17 @@ The web interface provides clear, interactive elements for user interaction:
   - 前端显示清晰：期号、更新状态、重复警告一目了然
   - 完全满足用户需求：预测明确期号，新数据自动推进下一期
 
+**2025-10-06 预测分析列表排序修复（已完成）**：
+- **问题描述**：预测分析页面期数列表混乱，不按顺序排列，影响用户对比分析
+- **修复方案**：
+  - 修改get_all_predictions_with_results()：从按ID排序改为按期号（target_period）降序排序
+  - 使用cast(PredictionRecord.target_period, Integer)将字符串期号转为整数正确排序
+  - 确保最新期号显示在最前面，期号连贯性强
+- **验证结果**：
+  - ✅ 期号严格按降序排列：25114 → 25113 → 25107 → 25106 → ...
+  - ✅ 列表展示清晰，便于对比预测结果与实际开奖
+  - ✅ 符合用户需求：先预测上一期，然后与开奖号码对比分析
+
 **2025-10-06 预测验证与分析系统（已完成）**：
 - **数据库架构升级**：
   - PredictionRecord表新增5个胆拖字段：front_dan, front_tuo, back_dan, back_tuo, combination_count
