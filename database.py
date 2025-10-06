@@ -172,7 +172,12 @@ class Database:
                 front_numbers=prediction_data['front_numbers'],
                 back_numbers=prediction_data['back_numbers'],
                 front_probabilities=prediction_data.get('front_probabilities', ''),
-                back_probabilities=prediction_data.get('back_probabilities', '')
+                back_probabilities=prediction_data.get('back_probabilities', ''),
+                front_dan=prediction_data.get('front_dan'),
+                front_tuo=prediction_data.get('front_tuo'),
+                back_dan=prediction_data.get('back_dan'),
+                back_tuo=prediction_data.get('back_tuo'),
+                combination_count=prediction_data.get('combination_count')
             )
             session.add(record)
             session.commit()
