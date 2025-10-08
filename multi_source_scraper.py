@@ -6,13 +6,24 @@ from typing import List, Dict, Tuple
 from datetime import datetime
 
 class MultiSourceScraper:
-    """多数据源采集器，从多个网站获取大乐透数据"""
+    """多数据源采集器，支持多种彩票数据采集"""
     
-    def __init__(self):
+    def __init__(self, lottery_type='dlt'):
+        """
+        初始化采集器
+        
+        参数:
+            lottery_type: 彩票类型 (dlt=大乐透, ssq=双色球, fc3d=福彩3D)
+        """
+        self.lottery_type = lottery_type
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         self.sources = []
+        
+        # 验证彩票类型
+        if lottery_type not in ['dlt', 'ssq', 'fc3d']:
+            raise ValueError(f"不支持的彩票类型: {lottery_type}，仅支持 dlt/ssq/fc3d")
     
     def scrape_500_com(self, limit=500) -> Tuple[pd.DataFrame, str]:
         """从500彩票网采集数据"""

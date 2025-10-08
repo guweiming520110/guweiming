@@ -6,8 +6,35 @@ from scipy.stats import entropy
 from sklearn.neighbors import NearestNeighbors
 
 class FeatureEngineer:
-    def __init__(self, df):
+    def __init__(self, df, lottery_type='dlt'):
+        """
+        初始化特征工程器
+        
+        参数:
+            df: 历史数据DataFrame
+            lottery_type: 彩票类型 (dlt=大乐透, ssq=双色球, fc3d=福彩3D)
+        """
         self.df = df.copy()
+        self.lottery_type = lottery_type
+        
+        # 根据彩票类型设置号码范围和列名
+        if lottery_type == 'dlt':
+            self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+            self.back_cols = ['back_1', 'back_2']
+            self.front_range = (1, 36)
+            self.back_range = (1, 13)
+        elif lottery_type == 'ssq':
+            self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5', 'front_6']
+            self.back_cols = ['back_1']
+            self.front_range = (1, 34)
+            self.back_range = (1, 17)
+        elif lottery_type == 'fc3d':
+            self.front_cols = ['front_1', 'front_2', 'front_3']
+            self.back_cols = []
+            self.front_range = (0, 10)
+            self.back_range = None
+        else:
+            raise ValueError(f"不支持的彩票类型: {lottery_type}")
     
     def extract_all_features(self):
         self.df = self.df.sort_values('period').reset_index(drop=True)
@@ -34,31 +61,34 @@ class FeatureEngineer:
         return self.df
     
     def add_number_frequency(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
-        back_cols = ['back_1', 'back_2']
-        
         front_freq = {}
         back_freq = {}
         
-        for num in range(1, 36):
+        # 初始化频率字典
+        for num in range(self.front_range[0], self.front_range[1]):
             front_freq[num] = 0
-        for num in range(1, 13):
-            back_freq[num] = 0
+        if self.back_range:
+            for num in range(self.back_range[0], self.back_range[1]):
+                back_freq[num] = 0
         
+        # 统计频率
         for _, row in self.df.iterrows():
-            for col in front_cols:
-                front_freq[row[col]] += 1
-            for col in back_cols:
-                back_freq[row[col]] += 1
+            for col in self.front_cols:
+                if pd.notna(row[col]):
+                    front_freq[int(row[col])] = front_freq.get(int(row[col]), 0) + 1
+            for col in self.back_cols:
+                if pd.notna(row[col]):
+                    back_freq[int(row[col])] = back_freq.get(int(row[col]), 0) + 1
         
         self.front_freq = front_freq
         self.back_freq = back_freq
     
     def add_omission_values(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
-        
-        front_omission = {i: 0 for i in range(1, 36)}
-        back_omission = {i: 0 for i in range(1, 13)}
+        # 初始化遗漏值字典
+        front_omission = {i: 0 for i in range(self.front_range[0], self.front_range[1])}
+        back_omission = {}
+        if self.back_range:
+            back_omission = {i: 0 for i in range(self.back_range[0], self.back_range[1])}
         
         omission_records = []
         

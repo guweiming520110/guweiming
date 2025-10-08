@@ -11,7 +11,14 @@ import os
 from feature_config import get_all_features
 
 class LotteryPredictor:
-    def __init__(self):
+    def __init__(self, lottery_type='dlt'):
+        """
+        初始化彩票预测器
+        
+        参数:
+            lottery_type: 彩票类型 (dlt=大乐透, ssq=双色球, fc3d=福彩3D)
+        """
+        self.lottery_type = lottery_type
         self.rf_models_front = []
         self.rf_models_back = []
         self.xgb_models_front = []
@@ -27,6 +34,19 @@ class LotteryPredictor:
         
         self.dl_predictor = None
         self.use_deep_learning = False
+        
+        # 根据彩票类型设置号码数量
+        if lottery_type == 'dlt':
+            self.front_count = 5
+            self.back_count = 2
+        elif lottery_type == 'ssq':
+            self.front_count = 6
+            self.back_count = 1
+        elif lottery_type == 'fc3d':
+            self.front_count = 3
+            self.back_count = 0
+        else:
+            raise ValueError(f"不支持的彩票类型: {lottery_type}")
         
     def prepare_data(self, df):
         feature_cols = get_all_features()
@@ -51,7 +71,8 @@ class LotteryPredictor:
         
         print(f"开始训练随机森林模型，数据量: {len(df)}条")
         
-        for i in range(1, 6):
+        # 训练前区模型
+        for i in range(1, self.front_count + 1):
             y = df[f'front_{i}'].values
             unique_classes = np.unique(y)
             print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
@@ -60,7 +81,8 @@ class LotteryPredictor:
             model.fit(X, y)
             self.rf_models_front.append(model)
         
-        for i in range(1, 3):
+        # 训练后区模型
+        for i in range(1, self.back_count + 1):
             y = df[f'back_{i}'].values
             unique_classes = np.unique(y)
             print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
@@ -366,21 +388,23 @@ class LotteryPredictor:
         }
     
     def save_models(self, path='models'):
-        os.makedirs(path, exist_ok=True)
+        # 为不同彩票类型使用不同的子目录
+        save_path = os.path.join(path, self.lottery_type)
+        os.makedirs(save_path, exist_ok=True)
         
-        with open(f'{path}/rf_front.pkl', 'wb') as f:
+        with open(f'{save_path}/rf_front.pkl', 'wb') as f:
             pickle.dump(self.rf_models_front, f)
-        with open(f'{path}/rf_back.pkl', 'wb') as f:
+        with open(f'{save_path}/rf_back.pkl', 'wb') as f:
             pickle.dump(self.rf_models_back, f)
-        with open(f'{path}/xgb_front.pkl', 'wb') as f:
+        with open(f'{save_path}/xgb_front.pkl', 'wb') as f:
             pickle.dump(self.xgb_models_front, f)
-        with open(f'{path}/xgb_back.pkl', 'wb') as f:
+        with open(f'{save_path}/xgb_back.pkl', 'wb') as f:
             pickle.dump(self.xgb_models_back, f)
-        with open(f'{path}/scaler.pkl', 'wb') as f:
+        with open(f'{save_path}/scaler.pkl', 'wb') as f:
             pickle.dump(self.scaler, f)
-        with open(f'{path}/label_encoders_front.pkl', 'wb') as f:
+        with open(f'{save_path}/label_encoders_front.pkl', 'wb') as f:
             pickle.dump(self.label_encoders_front, f)
-        with open(f'{path}/label_encoders_back.pkl', 'wb') as f:
+        with open(f'{save_path}/label_encoders_back.pkl', 'wb') as f:
             pickle.dump(self.label_encoders_back, f)
         
         weights_dict = {
@@ -389,32 +413,35 @@ class LotteryPredictor:
             'lstm_weight': self.lstm_weight,
             'transformer_weight': self.transformer_weight
         }
-        with open(f'{path}/ensemble_weights.pkl', 'wb') as f:
+        with open(f'{save_path}/ensemble_weights.pkl', 'wb') as f:
             pickle.dump(weights_dict, f)
         
         model_info = f"RF={self.rf_weight}, XGB={self.xgb_weight}"
         if self.use_deep_learning:
             model_info += f", LSTM={self.lstm_weight}, Transformer={self.transformer_weight}"
-        print(f"✅ 模型已保存到 {path} ({model_info})")
+        print(f"✅ 模型已保存到 {save_path} ({model_info})")
     
     def load_models(self, path='models'):
-        with open(f'{path}/rf_front.pkl', 'rb') as f:
+        # 从彩票类型对应的子目录加载
+        load_path = os.path.join(path, self.lottery_type)
+        
+        with open(f'{load_path}/rf_front.pkl', 'rb') as f:
             self.rf_models_front = pickle.load(f)
-        with open(f'{path}/rf_back.pkl', 'rb') as f:
+        with open(f'{load_path}/rf_back.pkl', 'rb') as f:
             self.rf_models_back = pickle.load(f)
-        with open(f'{path}/xgb_front.pkl', 'rb') as f:
+        with open(f'{load_path}/xgb_front.pkl', 'rb') as f:
             self.xgb_models_front = pickle.load(f)
-        with open(f'{path}/xgb_back.pkl', 'rb') as f:
+        with open(f'{load_path}/xgb_back.pkl', 'rb') as f:
             self.xgb_models_back = pickle.load(f)
-        with open(f'{path}/scaler.pkl', 'rb') as f:
+        with open(f'{load_path}/scaler.pkl', 'rb') as f:
             self.scaler = pickle.load(f)
-        with open(f'{path}/label_encoders_front.pkl', 'rb') as f:
+        with open(f'{load_path}/label_encoders_front.pkl', 'rb') as f:
             self.label_encoders_front = pickle.load(f)
-        with open(f'{path}/label_encoders_back.pkl', 'rb') as f:
+        with open(f'{load_path}/label_encoders_back.pkl', 'rb') as f:
             self.label_encoders_back = pickle.load(f)
         
-        if os.path.exists(f'{path}/ensemble_weights.pkl'):
-            with open(f'{path}/ensemble_weights.pkl', 'rb') as f:
+        if os.path.exists(f'{load_path}/ensemble_weights.pkl'):
+            with open(f'{load_path}/ensemble_weights.pkl', 'rb') as f:
                 weights = pickle.load(f)
                 self.rf_weight = weights.get('rf_weight', 0.2)
                 self.xgb_weight = weights.get('xgb_weight', 0.2)
