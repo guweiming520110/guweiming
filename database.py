@@ -71,7 +71,7 @@ class Database:
         """获取一个新的session"""
         return self.Session()
     
-    def insert_data_from_csv(self, csv_file):
+    def insert_data_from_csv(self, csv_file, lottery_type='dlt'):
         df = pd.read_csv(csv_file)
         session = self.get_session()
         
@@ -81,21 +81,25 @@ class Database:
                 period_str = str(int(row['period']))
                 
                 existing = session.query(LotteryRecord).filter(
+                    LotteryRecord.lottery_type == lottery_type,
                     LotteryRecord.period == period_str
                 ).first()
                 
                 if not existing:
-                    record = LotteryRecord(
-                        period=period_str,
-                        date=str(row['date']),
-                        front_1=int(row['front_1']),
-                        front_2=int(row['front_2']),
-                        front_3=int(row['front_3']),
-                        front_4=int(row['front_4']),
-                        front_5=int(row['front_5']),
-                        back_1=int(row['back_1']),
-                        back_2=int(row['back_2'])
-                    )
+                    record_data = {
+                        'lottery_type': lottery_type,
+                        'period': period_str,
+                        'date': str(row['date']),
+                        'front_1': int(row['front_1']) if 'front_1' in row and pd.notna(row['front_1']) else None,
+                        'front_2': int(row['front_2']) if 'front_2' in row and pd.notna(row['front_2']) else None,
+                        'front_3': int(row['front_3']) if 'front_3' in row and pd.notna(row['front_3']) else None,
+                        'front_4': int(row['front_4']) if 'front_4' in row and pd.notna(row['front_4']) else None,
+                        'front_5': int(row['front_5']) if 'front_5' in row and pd.notna(row['front_5']) else None,
+                        'front_6': int(row['front_6']) if 'front_6' in row and pd.notna(row['front_6']) else None,
+                        'back_1': int(row['back_1']) if 'back_1' in row and pd.notna(row['back_1']) else None,
+                        'back_2': int(row['back_2']) if 'back_2' in row and pd.notna(row['back_2']) else None
+                    }
+                    record = LotteryRecord(**record_data)
                     session.add(record)
                     added_count += 1
                     
