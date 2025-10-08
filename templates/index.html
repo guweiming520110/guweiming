@@ -205,8 +205,23 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎰 大乐透AI预测系统</h1>
+            <h1>🎰 多彩票AI预测系统</h1>
             <p>基于机器学习的号码分析与预测</p>
+        </div>
+        
+        <div class="card">
+            <h2>🎲 彩票类型选择</h2>
+            <div style="margin-bottom: 15px;">
+                <label style="font-weight: bold; margin-right: 10px; font-size: 16px;">选择彩票类型：</label>
+                <select id="lotteryTypeSelect" style="padding: 10px; font-size: 16px; border-radius: 5px; border: 1px solid #ddd; min-width: 200px;">
+                    <option value="dlt" selected>大乐透 (5+2)</option>
+                    <option value="ssq" disabled>双色球 (6+1) - 即将上线</option>
+                    <option value="fc3d" disabled>福彩3D - 即将上线</option>
+                </select>
+            </div>
+            <div id="lotteryTypeInfo" style="padding: 12px; background: #e3f2fd; border-radius: 5px; color: #1565c0;">
+                <strong>当前选择：</strong>大乐透 (前区35选5 + 后区12选2)
+            </div>
         </div>
         
         <div class="card">
@@ -297,6 +312,27 @@
     </div>
     
     <script>
+        // 获取当前选择的彩票类型
+        function getLotteryType() {
+            return document.getElementById('lotteryTypeSelect').value;
+        }
+        
+        // 彩票类型切换处理
+        document.addEventListener('DOMContentLoaded', function() {
+            const lotteryTypeSelect = document.getElementById('lotteryTypeSelect');
+            const lotteryTypeInfo = document.getElementById('lotteryTypeInfo');
+            
+            lotteryTypeSelect.addEventListener('change', function() {
+                const type = this.value;
+                const infoMap = {
+                    'dlt': '大乐透 (前区35选5 + 后区12选2)',
+                    'ssq': '双色球 (红球33选6 + 蓝球16选1)',
+                    'fc3d': '福彩3D (3位数字，每位0-9)'
+                };
+                lotteryTypeInfo.innerHTML = `<strong>当前选择：</strong>${infoMap[type]}`;
+            });
+        });
+        
         async function scrapeData() {
             const loading = document.getElementById('scrapeLoading');
             const error = document.getElementById('scrapeError');
@@ -312,7 +348,10 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ limit: 5000 })
+                    body: JSON.stringify({ 
+                        limit: 5000,
+                        lottery_type: getLotteryType()
+                    })
                 });
                 const data = await response.json();
                 
@@ -352,7 +391,10 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ play_type: playType })
+                    body: JSON.stringify({ 
+                        play_type: playType,
+                        lottery_type: getLotteryType()
+                    })
                 });
                 const data = await response.json();
                 
