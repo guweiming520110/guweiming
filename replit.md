@@ -9,6 +9,11 @@ This project is an AI-powered system designed to analyze and predict numbers for
 ## System Architecture
 The system is built with Python 3.11 and Flask, using SQLAlchemy with a PostgreSQL database. Data processing leverages pandas and numpy, while web scraping uses Beautiful Soup 4 and requests for multiple sources with deduplication and fault tolerance.
 
+**Multi-Lottery Architecture Status (Plan A - Progressive Implementation):**
+- ✅ **大乐透 (DLT):** Fully operational with complete data pipeline, AI prediction, and evaluation
+- 🔧 **双色球 (SSQ):** Infrastructure ready, requires scraper implementation and feature engineering refinements
+- 🔧 **福彩3D (FC3D):** Infrastructure ready, requires scraper implementation and feature engineering adaptations for repeated digits
+
 **UI/UX Decisions:**
 The web interface includes:
 - **Data Collection Button:** One-click to fetch latest lottery data.
@@ -19,7 +24,7 @@ The web interface includes:
 - **Lottery Type Selector:** Allows selection between different lottery types (currently DLT, with SSQ and FC3D planned).
 
 **Technical Implementations:**
-- **Feature Engineering:** Utilizes 39 distinct features, including basic statistics, advanced patterns, temporal seasonality, and volatility indicators.
+- **Feature Engineering:** Utilizes 39 distinct features, including basic statistics, advanced patterns, temporal seasonality, and volatility indicators. Fully parameterized to support different lottery types with dynamic column generation and range-aware calculations. Note: Some advanced features (span, consecutive, interval) currently optimized for non-repeating number sequences (大乐透, 双色球), may need refinement for 福彩3D with repeated digits.
 - **AI Prediction Models:**
     - **Ensemble Approach:** Weighted integration of Random Forest (40%) and XGBoost (60%).
     - **Deep Learning (Optional):** Future integration of Bi-directional LSTM and Transformer models for a four-model ensemble.
@@ -35,9 +40,11 @@ The web interface includes:
 **System Design Choices:**
 - **Modularity:** Clear separation of concerns for scraping, database, feature engineering, and ML models.
 - **Scalability:** Designed to handle large data volumes and multiple sources.
-- **Persistence:** Models are persisted using `pickle`.
-- **Database Schema:** `PredictionRecord` table includes fields for detailed "胆拖" (dare-drag) betting strategies and `lottery_type` for multi-lottery support.
-- **Prediction Uniqueness:** Ensures only one prediction per target period and play type is stored.
+- **Persistence:** Models are persisted using `pickle` in lottery-type-specific subdirectories (`models/dlt/`, `models/ssq/`, `models/fc3d/`).
+- **Database Schema:** `PredictionRecord` table includes fields for detailed "胆拖" (dare-drag) betting strategies and `lottery_type` for multi-lottery support. Composite indexes on `(lottery_type, period)` and `(lottery_type, target_period)` ensure data integrity.
+- **Prediction Uniqueness:** Ensures only one prediction per target period, play type, and lottery type is stored.
+- **Dynamic Configuration:** All core modules (MultiSourceScraper, FeatureEngineer, LotteryPredictor) accept `lottery_type` parameter and adapt behavior based on `lottery_config.py` rules.
+- **Parameterization:** Eliminates hardcoded assumptions about front/back ball counts, number ranges, and thresholds. Fallback logic dynamically generates feature columns based on current lottery configuration.
 
 ## External Dependencies
 - **Backend Framework:** Flask
