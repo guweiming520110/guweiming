@@ -12,9 +12,12 @@ import json
 app = Flask(__name__)
 db = Database()
 
-def ensure_data_fresh():
+def ensure_data_fresh(lottery_type='dlt'):
     """
     确保数据是最新的，如有新开奖则自动更新
+    
+    参数:
+        lottery_type: 彩票类型 (dlt/ssq/fc3d)
     
     返回:
         dict: {
@@ -25,22 +28,22 @@ def ensure_data_fresh():
     """
     from multi_source_scraper import MultiSourceScraper
     
-    latest_period = db.get_latest_period()
-    old_count = db.get_record_count()
+    latest_period = db.get_latest_period(lottery_type)
+    old_count = db.get_record_count(lottery_type)
     
-    scraper = MultiSourceScraper()
+    scraper = MultiSourceScraper(lottery_type=lottery_type)
     result = scraper.scrape_latest_updates(latest_period=latest_period)
     
     df = result['dataframe']
     sources = result['sources']
     
     if not df.empty:
-        filename = 'lottery_data.csv'
+        filename = f'lottery_data_{lottery_type}.csv'
         df.to_csv(filename, index=False, encoding='utf-8-sig')
-        db.insert_data_from_csv(filename)
+        db.insert_data_from_csv(filename, lottery_type=lottery_type)
         
-        new_latest_period = db.get_latest_period()
-        new_count = db.get_record_count()
+        new_latest_period = db.get_latest_period(lottery_type)
+        new_count = db.get_record_count(lottery_type)
         added_count = new_count - old_count
         
         return {
@@ -63,7 +66,8 @@ def index():
 
 @app.route('/api/historical_data')
 def get_historical_data():
-    df = db.get_all_records()
+    lottery_type = request.args.get('lottery_type', default='dlt', type=str)
+    df = db.get_all_records(lottery_type=lottery_type)
     if df.empty:
         return jsonify({'error': '暂无历史数据，请先采集数据'}), 404
     
@@ -74,16 +78,18 @@ def get_historical_data():
     
     return jsonify({
         'data': records,
-        'total_count': total_count
+        'total_count': total_count,
+        'lottery_type': lottery_type
     })
 
 @app.route('/api/statistics')
 def get_statistics():
-    df = db.get_all_records()
+    lottery_type = request.args.get('lottery_type', default='dlt', type=str)
+    df = db.get_all_records(lottery_type=lottery_type)
     if df.empty:
         return jsonify({'error': '暂无数据'}), 404
     
-    fe = FeatureEngineer(df)
+    fe = FeatureEngineer(df, lottery_type=lottery_type)
     fe.add_number_frequency()
     hot_cold = fe.get_hot_cold_numbers()
     
@@ -91,7 +97,8 @@ def get_statistics():
         'hot_front': hot_cold['hot_front'],
         'cold_front': hot_cold['cold_front'],
         'hot_back': hot_cold['hot_back'],
-        'cold_back': hot_cold['cold_back']
+        'cold_back': hot_cold['cold_back'],
+        'lottery_type': lottery_type
     })
 
 @app.route('/api/predict', methods=['POST'])
@@ -99,25 +106,27 @@ def predict():
     try:
         from datetime import datetime
         
-        # 检查并更新数据（确保预测的是最新期号）
-        data_update_info = ensure_data_fresh()
+        data = request.get_json() or {}
+        lottery_type = data.get('lottery_type', 'dlt')
+        play_type = data.get('play_type', 'basic')
         
-        df = db.get_all_records()
+        # 检查并更新数据（确保预测的是最新期号）
+        data_update_info = ensure_data_fresh(lottery_type)
+        
+        df = db.get_all_records(lottery_type=lottery_type)
         if df.empty:
             return jsonify({'error': '暂无数据，无法预测'}), 404
         
         if len(df) < 50:
             return jsonify({'error': f'数据量不足：需要至少50条数据才能进行预测，当前只有{len(df)}条'}), 400
         
-        data = request.get_json() or {}
-        play_type = data.get('play_type', 'basic')
-        
-        fe = FeatureEngineer(df)
+        fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_features = fe.extract_all_features()
         
-        predictor = LotteryPredictor()
+        predictor = LotteryPredictor(lottery_type=lottery_type)
         
-        model_exists = os.path.exists('models/rf_front.pkl')
+        model_path = f'models/{lottery_type}/rf_front.pkl'
+        model_exists = os.path.exists(model_path)
         
         if model_exists:
             try:
@@ -149,7 +158,7 @@ def predict():
         
         prediction_result = predictor.predict_with_probabilities(latest_features, play_type=play_type)
         
-        latest_period_str = db.get_latest_period()
+        latest_period_str = db.get_latest_period(lottery_type)
         if latest_period_str:
             target_period = str(int(latest_period_str) + 1)
         else:
@@ -157,7 +166,7 @@ def predict():
         predict_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # 检查是否已存在相同期号+玩法的预测
-        existing_prediction = db.check_duplicate_prediction(target_period, play_type)
+        existing_prediction = db.check_duplicate_prediction(target_period, play_type, lottery_type)
         if existing_prediction:
             return jsonify({
                 'prediction': prediction_result,
@@ -184,6 +193,7 @@ def predict():
                 })
                 
                 prediction_data = {
+                    'lottery_type': lottery_type,
                     'predict_time': predict_time,
                     'target_period': target_period,
                     'play_type': play_type,
@@ -204,6 +214,7 @@ def predict():
                 back_probs = json.dumps(pred['back_probs'])
                 
                 prediction_data = {
+                    'lottery_type': lottery_type,
                     'predict_time': predict_time,
                     'target_period': target_period,
                     'play_type': play_type,
@@ -351,11 +362,13 @@ def verify_predictions():
 def get_prediction_analysis():
     """获取所有预测记录及其对比结果"""
     try:
-        predictions = db.get_all_predictions_with_results()
+        lottery_type = request.args.get('lottery_type', default='dlt', type=str)
+        predictions = db.get_all_predictions_with_results(lottery_type=lottery_type)
         return jsonify({
             'success': True,
             'predictions': predictions,
-            'total': len(predictions)
+            'total': len(predictions),
+            'lottery_type': lottery_type
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -364,10 +377,12 @@ def get_prediction_analysis():
 def get_prediction_statistics():
     """获取预测统计数据"""
     try:
-        stats = db.get_prediction_statistics()
+        lottery_type = request.args.get('lottery_type', default='dlt', type=str)
+        stats = db.get_prediction_statistics(lottery_type=lottery_type)
         return jsonify({
             'success': True,
-            'statistics': stats
+            'statistics': stats,
+            'lottery_type': lottery_type
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -377,11 +392,14 @@ def scrape_data():
     try:
         from multi_source_scraper import MultiSourceScraper
         
-        old_count = db.get_record_count()
-        latest_period = db.get_latest_period()
+        data = request.get_json(silent=True) or {}
+        lottery_type = data.get('lottery_type', 'dlt')
+        
+        old_count = db.get_record_count(lottery_type)
+        latest_period = db.get_latest_period(lottery_type)
         
         # 使用增量更新采集器（只获取最新数据，速度更快）
-        scraper = MultiSourceScraper()
+        scraper = MultiSourceScraper(lottery_type=lottery_type)
         result = scraper.scrape_latest_updates(latest_period=latest_period)
         
         df = result['dataframe']
@@ -389,13 +407,13 @@ def scrape_data():
         
         if not df.empty:
             # 保存到CSV
-            filename = 'lottery_data.csv'
+            filename = f'lottery_data_{lottery_type}.csv'
             df.to_csv(filename, index=False, encoding='utf-8-sig')
             
             # 导入数据库
-            db.insert_data_from_csv(filename)
+            db.insert_data_from_csv(filename, lottery_type=lottery_type)
             
-            new_count = db.get_record_count()
+            new_count = db.get_record_count(lottery_type)
             added_count = new_count - old_count
             
             period_range = f"{df['period'].iloc[0]} 到 {df['period'].iloc[-1]}" if len(df) > 1 else df['period'].iloc[0]
@@ -407,8 +425,9 @@ def scrape_data():
                 'added_count': added_count,
                 'total_count': new_count,
                 'period_range': period_range,
-                'latest_period': db.get_latest_period(),
-                'sources': sources
+                'latest_period': db.get_latest_period(lottery_type),
+                'sources': sources,
+                'lottery_type': lottery_type
             })
         else:
             # 没有新数据
@@ -419,7 +438,8 @@ def scrape_data():
                 'added_count': 0,
                 'total_count': old_count,
                 'latest_period': latest_period,
-                'sources': sources
+                'sources': sources,
+                'lottery_type': lottery_type
             })
     
     except Exception as e:
