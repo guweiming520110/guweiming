@@ -93,40 +93,41 @@ class FeatureEngineer:
         omission_records = []
         
         for idx, row in self.df.iterrows():
-            front_nums = [row[col] for col in front_cols]
-            back_nums = [row['back_1'], row['back_2']]
+            front_nums = [row[col] for col in self.front_cols]
+            back_nums = [row[col] for col in self.back_cols] if self.back_cols else []
             
-            for num in range(1, 36):
+            for num in range(self.front_range[0], self.front_range[1]):
                 if num in front_nums:
                     front_omission[num] = 0
                 else:
                     front_omission[num] += 1
             
-            for num in range(1, 13):
-                if num in back_nums:
-                    back_omission[num] = 0
-                else:
-                    back_omission[num] += 1
+            if self.back_range:
+                for num in range(self.back_range[0], self.back_range[1]):
+                    if num in back_nums:
+                        back_omission[num] = 0
+                    else:
+                        back_omission[num] += 1
             
             omission_records.append({
-                'max_front_omission': max(front_omission.values()),
-                'avg_front_omission': np.mean(list(front_omission.values())),
-                'max_back_omission': max(back_omission.values()),
-                'avg_back_omission': np.mean(list(back_omission.values()))
+                'max_front_omission': max(front_omission.values()) if front_omission else 0,
+                'avg_front_omission': np.mean(list(front_omission.values())) if front_omission else 0,
+                'max_back_omission': max(back_omission.values()) if back_omission else 0,
+                'avg_back_omission': np.mean(list(back_omission.values())) if back_omission else 0
             })
         
         for key in omission_records[0].keys():
             self.df[key] = [r[key] for r in omission_records]
     
     def add_odd_even_ratio(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         odd_counts = []
         even_counts = []
         
         for _, row in self.df.iterrows():
-            odd = sum(1 for col in front_cols if row[col] % 2 == 1)
-            even = 5 - odd
+            odd = sum(1 for col in self.front_cols if row[col] % 2 == 1)
+            even = len(self.front_cols) - odd
             odd_counts.append(odd)
             even_counts.append(even)
         
@@ -134,14 +135,15 @@ class FeatureEngineer:
         self.df['even_count'] = even_counts
     
     def add_size_ratio(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # 动态计算大小号阈值（取号码范围的中点）
+        threshold = (self.front_range[0] + self.front_range[1]) // 2
         
         large_counts = []
         small_counts = []
         
         for _, row in self.df.iterrows():
-            large = sum(1 for col in front_cols if row[col] > 18)
-            small = 5 - large
+            large = sum(1 for col in self.front_cols if row[col] > threshold)
+            small = len(self.front_cols) - large
             large_counts.append(large)
             small_counts.append(small)
         
@@ -149,36 +151,37 @@ class FeatureEngineer:
         self.df['small_count'] = small_counts
     
     def add_sum_values(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         sums = []
         for _, row in self.df.iterrows():
-            total = sum(row[col] for col in front_cols)
+            total = sum(row[col] for col in self.front_cols)
             sums.append(total)
         
         self.df['front_sum'] = sums
     
     def add_ac_value(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # AC值 = 差值个数 - (号码个数-1)
+        ac_offset = len(self.front_cols) - 1
         
         ac_values = []
         for _, row in self.df.iterrows():
-            nums = sorted([row[col] for col in front_cols])
+            nums = sorted([row[col] for col in self.front_cols])
             diffs = set()
             for i in range(len(nums)):
                 for j in range(i+1, len(nums)):
                     diffs.add(abs(nums[i] - nums[j]))
-            ac = len(diffs) - 4
+            ac = len(diffs) - ac_offset
             ac_values.append(ac)
         
         self.df['ac_value'] = ac_values
     
     def add_span_value(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         spans = []
         for _, row in self.df.iterrows():
-            nums = [row[col] for col in front_cols]
+            nums = [row[col] for col in self.front_cols]
             span = max(nums) - min(nums)
             spans.append(span)
         
@@ -201,14 +204,14 @@ class FeatureEngineer:
         }
     
     def add_cooccurrence_features(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         pair_counts = Counter()
         triplet_counts = Counter()
         total_draws = len(self.df)
         
         for _, row in self.df.iterrows():
-            nums = sorted([row[col] for col in front_cols])
+            nums = sorted([row[col] for col in self.front_cols])
             
             for i in range(len(nums)):
                 for j in range(i+1, len(nums)):
@@ -226,7 +229,7 @@ class FeatureEngineer:
         pmi_scores = []
         
         for idx, row in self.df.iterrows():
-            nums = sorted([row[col] for col in front_cols])
+            nums = sorted([row[col] for col in self.front_cols])
             
             max_pair_freq = 0
             for i in range(len(nums)):
@@ -307,13 +310,13 @@ class FeatureEngineer:
         self.df['month_cos'] = month_cos
     
     def add_consecutive_features(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         consecutive_counts = []
         max_consecutive = []
         
         for _, row in self.df.iterrows():
-            nums = sorted([row[col] for col in front_cols])
+            nums = sorted([row[col] for col in self.front_cols])
             
             consec_count = 0
             max_consec = 0
@@ -336,14 +339,14 @@ class FeatureEngineer:
         self.df['max_consecutive'] = max_consecutive
     
     def add_interval_density(self):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         zone1_counts = []
         zone2_counts = []
         zone3_counts = []
         
         for _, row in self.df.iterrows():
-            nums = [row[col] for col in front_cols]
+            nums = [row[col] for col in self.front_cols]
             
             zone1 = sum(1 for n in nums if 1 <= n <= 12)
             zone2 = sum(1 for n in nums if 13 <= n <= 24)
@@ -358,7 +361,7 @@ class FeatureEngineer:
         self.df['zone3_count'] = zone3_counts
     
     def add_volatility_features(self, window=10):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         rolling_std = []
         rolling_entropy = []
@@ -369,7 +372,7 @@ class FeatureEngineer:
             
             all_nums = []
             for _, row in window_data.iterrows():
-                all_nums.extend([row[col] for col in front_cols])
+                all_nums.extend([row[col] for col in self.front_cols])
             
             if len(all_nums) > 0:
                 std_val = np.std(all_nums)
@@ -388,9 +391,9 @@ class FeatureEngineer:
         self.df['rolling_entropy'] = rolling_entropy
     
     def add_similarity_features(self, k=5):
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
-        feature_matrix = self.df[front_cols].values
+        feature_matrix = self.df[self.front_cols].values
         
         if len(feature_matrix) < k:
             self.df['similarity_score'] = 0
@@ -414,8 +417,8 @@ class FeatureEngineer:
         短期频率动量特征：最近N期的号码出现频率
         捕捉"热号"和"冷号"的短期趋势
         """
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
-        back_cols = ['back_1', 'back_2']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.back_cols = ['back_1', 'back_2']
         
         for window in windows:
             front_momentum_col = f'front_momentum_{window}'
@@ -437,11 +440,11 @@ class FeatureEngineer:
                 back_nums = []
                 
                 for _, row in recent_df.iterrows():
-                    front_nums.extend([row[col] for col in front_cols])
-                    back_nums.extend([row[col] for col in back_cols])
+                    front_nums.extend([row[col] for col in self.front_cols])
+                    back_nums.extend([row[col] for col in self.back_cols])
                 
-                current_front = [self.df.iloc[idx][col] for col in front_cols if idx < len(self.df)]
-                current_back = [self.df.iloc[idx][col] for col in back_cols if idx < len(self.df)]
+                current_front = [self.df.iloc[idx][col] for col in self.front_cols if idx < len(self.df)]
+                current_back = [self.df.iloc[idx][col] for col in self.back_cols if idx < len(self.df)]
                 
                 front_hit_count = sum(1 for num in current_front if num in front_nums)
                 back_hit_count = sum(1 for num in current_back if num in back_nums)
@@ -457,7 +460,7 @@ class FeatureEngineer:
         条件间隔特征：特定条件下号码的出现间隔
         例如：奇数号码连续不出现的期数、大号连续不出现的期数
         """
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         odd_gap = 0
         even_gap = 0
@@ -470,7 +473,7 @@ class FeatureEngineer:
         small_gaps = []
         
         for idx, row in self.df.iterrows():
-            front_nums = [row[col] for col in front_cols]
+            front_nums = [row[col] for col in self.front_cols]
             
             has_odd = any(num % 2 == 1 for num in front_nums)
             has_even = any(num % 2 == 0 for num in front_nums)
@@ -512,7 +515,7 @@ class FeatureEngineer:
         期间转换特征：号码之间的转换概率
         从上期号码预测本期号码的相关性
         """
-        front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        # REMOVED hardcoded: self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
         
         prev_front_overlap = []
         prev_back_overlap = []
@@ -525,10 +528,10 @@ class FeatureEngineer:
                 transition_score.append(0)
                 continue
             
-            curr_front = set([self.df.iloc[idx][col] for col in front_cols])
+            curr_front = set([self.df.iloc[idx][col] for col in self.front_cols])
             curr_back = set([self.df.iloc[idx]['back_1'], self.df.iloc[idx]['back_2']])
             
-            prev_front = set([self.df.iloc[idx-1][col] for col in front_cols])
+            prev_front = set([self.df.iloc[idx-1][col] for col in self.front_cols])
             prev_back = set([self.df.iloc[idx-1]['back_1'], self.df.iloc[idx-1]['back_2']])
             
             front_overlap = len(curr_front & prev_front)

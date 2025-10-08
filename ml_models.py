@@ -54,7 +54,10 @@ class LotteryPredictor:
         
         if not available_cols:
             print("警告：没有可用的特征列，使用基础特征")
-            available_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+            # 动态生成基础特征列名，基于当前彩票类型
+            available_cols = [f'front_{i}' for i in range(1, self.front_count + 1)]
+            if self.back_count > 0:
+                available_cols += [f'back_{i}' for i in range(1, self.back_count + 1)]
         
         print(f"使用 {len(available_cols)} 个特征: {', '.join(available_cols[:10])}{'...' if len(available_cols) > 10 else ''}")
         
@@ -101,8 +104,11 @@ class LotteryPredictor:
         
         print(f"开始训练XGBoost模型，数据量: {len(df)}条")
         
-        for i in range(1, 6):
+        # 训练前区模型
+        for i in range(1, self.front_count + 1):
             y = df[f'front_{i}'].values
+            unique_classes = np.unique(y)
+            print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
             
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
@@ -113,8 +119,11 @@ class LotteryPredictor:
             self.xgb_models_front.append(model)
             self.label_encoders_front.append(le)
         
-        for i in range(1, 3):
+        # 训练后区模型
+        for i in range(1, self.back_count + 1):
             y = df[f'back_{i}'].values
+            unique_classes = np.unique(y)
+            print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
             
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
@@ -139,10 +148,13 @@ class LotteryPredictor:
     
     def validate_models(self, df):
         """验证模型是否与当前数据匹配"""
-        if not self.rf_models_front or not self.rf_models_back:
-            raise ValueError("模型未加载或未训练")
+        if not self.rf_models_front:
+            raise ValueError("前区模型未加载或未训练")
+        if self.back_count > 0 and not self.rf_models_back:
+            raise ValueError("后区模型未加载或未训练")
         
-        for i in range(1, 6):
+        # 验证前区模型
+        for i in range(1, self.front_count + 1):
             unique_values = df[f'front_{i}'].unique()
             model = self.rf_models_front[i-1]
             
@@ -154,7 +166,8 @@ class LotteryPredictor:
                         f"\n请删除旧模型重新训练。"
                     )
         
-        for i in range(1, 3):
+        # 验证后区模型
+        for i in range(1, self.back_count + 1):
             unique_values = df[f'back_{i}'].unique()
             model = self.rf_models_back[i-1]
             

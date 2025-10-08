@@ -137,7 +137,7 @@ def predict():
             except Exception as e:
                 print(f"模型验证失败: {e}")
                 print("重新训练模型...")
-                predictor = LotteryPredictor()
+                predictor = LotteryPredictor(lottery_type=lottery_type)
                 predictor.train_random_forest(df_features)
                 predictor.train_xgboost(df_features)
                 predictor.train_stacking(df_features)
@@ -459,14 +459,15 @@ def run_evaluation():
             return jsonify({'error': f'数据量不足：需要至少150条数据才能评估，当前只有{len(df)}条'}), 400
         
         data = request.get_json(silent=True) or {}
+        lottery_type = data.get('lottery_type', 'dlt')
         train_size = data.get('train_size', 100)
         test_size = data.get('test_size', 20)
         step = data.get('step', 20)
         
-        fe = FeatureEngineer(df)
+        fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_features = fe.extract_all_features()
         
-        predictor = LotteryPredictor()
+        predictor = LotteryPredictor(lottery_type=lottery_type)
         predictor.train_random_forest(df_features[:train_size])
         predictor.train_xgboost(df_features[:train_size])
         
