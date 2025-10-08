@@ -11,13 +11,15 @@ class LotteryRecord(Base):
     __tablename__ = 'lottery_records'
     
     id = Column(Integer, primary_key=True)
-    period = Column(String(20), unique=True, index=True)
+    lottery_type = Column(String(20), default='dlt', index=True)
+    period = Column(String(20), index=True)
     date = Column(String(20))
     front_1 = Column(Integer)
     front_2 = Column(Integer)
     front_3 = Column(Integer)
     front_4 = Column(Integer)
     front_5 = Column(Integer)
+    front_6 = Column(Integer)
     back_1 = Column(Integer)
     back_2 = Column(Integer)
 
@@ -25,6 +27,7 @@ class PredictionRecord(Base):
     __tablename__ = 'prediction_records'
     
     id = Column(Integer, primary_key=True)
+    lottery_type = Column(String(20), default='dlt', index=True)
     predict_time = Column(String(30))
     target_period = Column(String(20), index=True)
     play_type = Column(String(50))
@@ -109,21 +112,25 @@ class Database:
         finally:
             session.close()
     
-    def get_all_records(self):
+    def get_all_records(self, lottery_type='dlt'):
         session = self.get_session()
         try:
             from sqlalchemy import cast, Integer
-            records = session.query(LotteryRecord).order_by(cast(LotteryRecord.period, Integer).desc()).all()
+            records = session.query(LotteryRecord).filter(
+                LotteryRecord.lottery_type == lottery_type
+            ).order_by(cast(LotteryRecord.period, Integer).desc()).all()
             data = []
             for r in records:
                 data.append({
                     'period': r.period,
                     'date': r.date,
+                    'lottery_type': r.lottery_type,
                     'front_1': r.front_1,
                     'front_2': r.front_2,
                     'front_3': r.front_3,
                     'front_4': r.front_4,
                     'front_5': r.front_5,
+                    'front_6': r.front_6,
                     'back_1': r.back_1,
                     'back_2': r.back_2
                 })
@@ -135,12 +142,14 @@ class Database:
         finally:
             session.close()
     
-    def get_latest_period(self):
+    def get_latest_period(self, lottery_type='dlt'):
         """获取数据库中最新的期号"""
         session = self.get_session()
         try:
             from sqlalchemy import cast, Integer
-            latest = session.query(LotteryRecord).order_by(cast(LotteryRecord.period, Integer).desc()).first()
+            latest = session.query(LotteryRecord).filter(
+                LotteryRecord.lottery_type == lottery_type
+            ).order_by(cast(LotteryRecord.period, Integer).desc()).first()
             return latest.period if latest else None
         except Exception as e:
             session.rollback()
@@ -149,11 +158,13 @@ class Database:
         finally:
             session.close()
     
-    def get_record_count(self):
+    def get_record_count(self, lottery_type='dlt'):
         """获取数据库中的记录总数"""
         session = self.get_session()
         try:
-            return session.query(LotteryRecord).count()
+            return session.query(LotteryRecord).filter(
+                LotteryRecord.lottery_type == lottery_type
+            ).count()
         except Exception as e:
             session.rollback()
             print(f"查询记录数出错: {str(e)}")
@@ -161,13 +172,14 @@ class Database:
         finally:
             session.close()
     
-    def check_duplicate_prediction(self, target_period, play_type):
+    def check_duplicate_prediction(self, target_period, play_type, lottery_type='dlt'):
         """
         检查是否存在重复预测
         
         参数:
             target_period: 目标期号
             play_type: 玩法类型
+            lottery_type: 彩票类型
         
         返回:
             PredictionRecord对象（如存在）或None
@@ -175,6 +187,7 @@ class Database:
         session = self.get_session()
         try:
             existing = session.query(PredictionRecord).filter(
+                PredictionRecord.lottery_type == lottery_type,
                 PredictionRecord.target_period == target_period,
                 PredictionRecord.play_type == play_type
             ).first()
@@ -191,6 +204,7 @@ class Database:
         session = self.get_session()
         try:
             record = PredictionRecord(
+                lottery_type=prediction_data.get('lottery_type', 'dlt'),
                 predict_time=prediction_data['predict_time'],
                 target_period=prediction_data['target_period'],
                 play_type=prediction_data['play_type'],
@@ -229,6 +243,7 @@ class Database:
     
     def update_prediction_result(self, prediction_id, actual_front, actual_back, front_match, back_match):
         """更新预测结果"""
+        from lottery_config import calculate_prize_level
         session = self.get_session()
         try:
             record = session.query(PredictionRecord).filter(PredictionRecord.id == prediction_id).first()
@@ -239,24 +254,9 @@ class Database:
                 record.back_match_count = back_match
                 record.is_matched = 1 if (front_match + back_match) > 0 else 0
                 
-                if front_match == 5 and back_match == 2:
-                    record.match_level = "一等奖"
-                elif front_match == 5 and back_match == 1:
-                    record.match_level = "二等奖"
-                elif front_match == 5 and back_match == 0:
-                    record.match_level = "三等奖"
-                elif front_match == 4 and back_match == 2:
-                    record.match_level = "四等奖"
-                elif front_match == 4 and back_match == 1:
-                    record.match_level = "五等奖"
-                elif (front_match == 3 and back_match == 2) or (front_match == 4 and back_match == 0):
-                    record.match_level = "六等奖"
-                elif (front_match == 2 and back_match == 2) or (front_match == 3 and back_match == 1) or back_match == 2:
-                    record.match_level = "七等奖"
-                elif (front_match == 3 and back_match == 0) or (front_match == 2 and back_match == 1) or (front_match == 1 and back_match == 2) or back_match == 1:
-                    record.match_level = "八等奖"
-                else:
-                    record.match_level = "未中奖"
+                # 使用配置模块计算中奖等级
+                lottery_type = record.lottery_type or 'dlt'
+                record.match_level = calculate_prize_level(lottery_type, front_match, back_match)
                 
                 session.commit()
                 return True
@@ -268,12 +268,15 @@ class Database:
         finally:
             session.close()
     
-    def get_all_predictions_with_results(self):
+    def get_all_predictions_with_results(self, lottery_type='dlt'):
         """获取所有胆拖预测记录及其对比结果（按期号降序排列）"""
         session = self.get_session()
         try:
             from sqlalchemy import cast, Integer
-            predictions = session.query(PredictionRecord).filter(PredictionRecord.play_type == 'dantuo').order_by(cast(PredictionRecord.target_period, Integer).desc()).all()
+            predictions = session.query(PredictionRecord).filter(
+                PredictionRecord.lottery_type == lottery_type,
+                PredictionRecord.play_type == 'dantuo'
+            ).order_by(cast(PredictionRecord.target_period, Integer).desc()).all()
             results = []
             for pred in predictions:
                 result = {
@@ -312,11 +315,13 @@ class Database:
         finally:
             session.close()
     
-    def get_prediction_statistics(self):
+    def get_prediction_statistics(self, lottery_type='dlt'):
         """获取预测统计数据"""
         session = self.get_session()
         try:
-            all_predictions = session.query(PredictionRecord).all()
+            all_predictions = session.query(PredictionRecord).filter(
+                PredictionRecord.lottery_type == lottery_type
+            ).all()
             
             if not all_predictions:
                 return {
