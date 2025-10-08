@@ -45,14 +45,14 @@
       "back_hits_avg": 0.31828358208955226
     },
     "random_baseline": {
-      "front_hits_avg": 0.7132574626865672,
-      "front_hits_std": 0.024569270903576856,
-      "back_hits_avg": 0.3317388059701492,
-      "back_hits_std": 0.01018715760138934
+      "front_hits_avg": 0.7167014925373134,
+      "front_hits_std": 0.02638052418238167,
+      "back_hits_avg": 0.33285074626865657,
+      "back_hits_std": 0.010921931804480572
     },
     "improvement_percent": {
-      "front_improvement": 89.74329463832635,
-      "back_improvement": -4.055969225923989
+      "front_improvement": 88.83150419625565,
+      "back_improvement": -4.376485359400874
     }
   },
   "overall_accuracy": {
