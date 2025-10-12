@@ -691,6 +691,8 @@
             const success = document.getElementById('evalSuccess');
             const report = document.getElementById('evaluationReport');
             
+            const lotteryType = getLotteryType();
+            
             loading.classList.add('show');
             error.classList.remove('show');
             success.classList.remove('show');
@@ -703,6 +705,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
+                        lottery_type: lotteryType,
                         train_size: 100,
                         test_size: 20,
                         step: 20

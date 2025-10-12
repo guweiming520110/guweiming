@@ -451,15 +451,15 @@ def run_evaluation():
     try:
         from evaluation import LotteryEvaluator
         
-        df = db.get_all_records()
+        data = request.get_json(silent=True) or {}
+        lottery_type = data.get('lottery_type', 'dlt')
+        
+        df = db.get_all_records(lottery_type=lottery_type)
         if df.empty:
             return jsonify({'error': '暂无数据，无法评估'}), 404
         
         if len(df) < 150:
             return jsonify({'error': f'数据量不足：需要至少150条数据才能评估，当前只有{len(df)}条'}), 400
-        
-        data = request.get_json(silent=True) or {}
-        lottery_type = data.get('lottery_type', 'dlt')
         train_size = data.get('train_size', 100)
         test_size = data.get('test_size', 20)
         step = data.get('step', 20)
