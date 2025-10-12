@@ -120,6 +120,12 @@ def predict():
         if len(df) < 50:
             return jsonify({'error': f'数据量不足：需要至少50条数据才能进行预测，当前只有{len(df)}条'}), 400
         
+        # 限制数据量以避免超时（只使用最近500条用于特征提取和训练）
+        max_data_for_training = 500
+        if len(df) > max_data_for_training:
+            print(f"数据集过大({len(df)}条)，使用最近{max_data_for_training}条进行特征提取和模型训练")
+            df = df.tail(max_data_for_training)
+        
         fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_features = fe.extract_all_features()
         
