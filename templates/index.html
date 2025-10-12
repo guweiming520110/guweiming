@@ -693,12 +693,17 @@
             
             const lotteryType = getLotteryType();
             
+            loading.textContent = '⏳ 评估运行中，预计需要30-60秒，请耐心等待...';
             loading.classList.add('show');
             error.classList.remove('show');
             success.classList.remove('show');
             report.style.display = 'none';
             
             try {
+                // 创建AbortController用于超时控制
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 90000); // 90秒超时
+                
                 const response = await fetch('/api/evaluation/run', {
                     method: 'POST',
                     headers: {
@@ -706,11 +711,14 @@
                     },
                     body: JSON.stringify({
                         lottery_type: lotteryType,
-                        train_size: 100,
-                        test_size: 20,
-                        step: 20
-                    })
+                        train_size: 50,
+                        test_size: 30,
+                        step: 30
+                    }),
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
                 const data = await response.json();
                 
                 if (response.ok) {
@@ -722,7 +730,11 @@
                     error.classList.add('show');
                 }
             } catch (err) {
-                error.textContent = '网络错误：' + err.message;
+                if (err.name === 'AbortError') {
+                    error.textContent = '评估超时：任务运行时间超过90秒。建议：等待30秒后点击"查看最新报告"按钮，任务可能已在后台完成';
+                } else {
+                    error.textContent = '网络错误：' + err.message + '。提示：任务可能仍在后台运行，请等待30秒后点击"查看最新报告"查看结果';
+                }
                 error.classList.add('show');
             } finally {
                 loading.classList.remove('show');
