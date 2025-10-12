@@ -458,11 +458,19 @@ def run_evaluation():
         if df.empty:
             return jsonify({'error': '暂无数据，无法评估'}), 404
         
-        if len(df) < 150:
-            return jsonify({'error': f'数据量不足：需要至少150条数据才能评估，当前只有{len(df)}条'}), 400
-        train_size = data.get('train_size', 100)
-        test_size = data.get('test_size', 20)
-        step = data.get('step', 20)
+        if len(df) < 100:
+            return jsonify({'error': f'数据量不足：需要至少100条数据才能评估，当前只有{len(df)}条'}), 400
+        
+        train_size = data.get('train_size', 50)
+        test_size = data.get('test_size', 30)
+        step = data.get('step', 30)
+        
+        # 限制最大评估窗口数以避免超时
+        max_windows = 10
+        max_data_size = train_size + test_size + (max_windows - 1) * step
+        if len(df) > max_data_size:
+            print(f"数据集过大({len(df)}条)，截取最近{max_data_size}条以限制评估窗口为{max_windows}个")
+            df = df.tail(max_data_size)
         
         fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_features = fe.extract_all_features()
