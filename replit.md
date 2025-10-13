@@ -21,11 +21,12 @@ The web interface includes:
   - **基础推荐 (Basic):** 1 set of 5 front + 2 back numbers
   - **多组推荐 (Multiple):** 3 sets of combinations
   - **复式推荐 (Top Probability):** 10 front + 5 back high-probability numbers
-  - **胆拖推荐 (Dare-Drag):** 2胆6拖 for front zone + 1胆3拖 for back zone (60 combinations)
+  - **胆拖推荐 (Dare-Drag):** 2胆6拖 for front zone + 1胆3拖 for back zone (60 combinations) - Updated 2025-10-13
 - **Statistical Analysis:** Displays hot and cold numbers.
 - **Historical Records:** Browsing of past lottery results.
 - **Prediction Analysis UI:** View predictions vs. actual outcomes and hit rates.
 - **Lottery Type Selector:** Allows selection between different lottery types (currently DLT, with SSQ and FC3D planned).
+- **Prize Rules:** Implements official Super Lotto prize structure (9 tiers, minimum prize: 后区2个号码 = ¥5)
 
 **Technical Implementations:**
 - **Feature Engineering:** Utilizes 39 distinct features, including basic statistics, advanced patterns, temporal seasonality, and volatility indicators. Fully parameterized to support different lottery types with dynamic column generation and range-aware calculations. Note: Some advanced features (span, consecutive, interval) currently optimized for non-repeating number sequences (大乐透, 双色球), may need refinement for 福彩3D with repeated digits.
