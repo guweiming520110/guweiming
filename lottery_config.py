@@ -137,10 +137,12 @@ def calculate_prize_level(lottery_type, front_match, back_match):
             return "五等奖"
         elif (front_match == 3 and back_match == 2) or (front_match == 4 and back_match == 0):
             return "六等奖"
-        elif (front_match == 2 and back_match == 2) or (front_match == 3 and back_match == 1) or back_match == 2:
+        elif (front_match == 2 and back_match == 2) or (front_match == 3 and back_match == 1):
             return "七等奖"
-        elif (front_match == 3 and back_match == 0) or (front_match == 2 and back_match == 1) or (front_match == 1 and back_match == 2) or back_match == 1:
+        elif (front_match == 1 and back_match == 2) or (front_match == 0 and back_match == 2):
             return "八等奖"
+        elif (front_match == 3 and back_match == 0) or (front_match == 2 and back_match == 1):
+            return "九等奖"
         else:
             return "未中奖"
     

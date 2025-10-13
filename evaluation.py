@@ -15,13 +15,13 @@ class LotteryEvaluator:
             {'name': 'fourth', 'front': 4, 'back': 2, 'prize': 3000},
             {'name': 'fifth', 'front': 4, 'back': 1, 'prize': 300},
             {'name': 'sixth', 'front': 3, 'back': 2, 'prize': 200},
-            {'name': 'seventh', 'front': 4, 'back': 0, 'prize': 100},
-            {'name': 'eighth', 'front': 3, 'back': 1, 'prize': 15},
-            {'name': 'eighth', 'front': 2, 'back': 2, 'prize': 15},
+            {'name': 'sixth', 'front': 4, 'back': 0, 'prize': 200},
+            {'name': 'seventh', 'front': 2, 'back': 2, 'prize': 100},
+            {'name': 'seventh', 'front': 3, 'back': 1, 'prize': 100},
+            {'name': 'eighth', 'front': 1, 'back': 2, 'prize': 15},
+            {'name': 'eighth', 'front': 0, 'back': 2, 'prize': 15},
             {'name': 'ninth', 'front': 3, 'back': 0, 'prize': 5},
-            {'name': 'ninth', 'front': 2, 'back': 1, 'prize': 5},
-            {'name': 'ninth', 'front': 1, 'back': 2, 'prize': 5},
-            {'name': 'ninth', 'front': 0, 'back': 2, 'prize': 5}
+            {'name': 'ninth', 'front': 2, 'back': 1, 'prize': 5}
         ]
     
     def walk_forward_validation(self, df, predictor_func, train_size=100, test_size=50, step=10):
