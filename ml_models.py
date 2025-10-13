@@ -303,10 +303,10 @@ class LotteryPredictor:
         
         elif play_type == 'dantuo':
             front_dan = sorted([num for num, _ in sorted_front[:2]])
-            front_tuo = sorted([num for num, _ in sorted_front[2:10]])
+            front_tuo = sorted([num for num, _ in sorted_front[2:8]])
             
             back_dan = sorted([num for num, _ in sorted_back[:1]])
-            back_tuo = sorted([num for num, _ in sorted_back[1:5]])
+            back_tuo = sorted([num for num, _ in sorted_back[1:4]])
             
             result['predictions'].append({
                 'front_dan': front_dan,
@@ -314,9 +314,9 @@ class LotteryPredictor:
                 'back_dan': back_dan,
                 'back_tuo': back_tuo,
                 'front_dan_probs': {num: float(prob) for num, prob in sorted_front[:2]},
-                'front_tuo_probs': {num: float(prob) for num, prob in sorted_front[2:10]},
+                'front_tuo_probs': {num: float(prob) for num, prob in sorted_front[2:8]},
                 'back_dan_probs': {num: float(prob) for num, prob in sorted_back[:1]},
-                'back_tuo_probs': {num: float(prob) for num, prob in sorted_back[1:5]},
+                'back_tuo_probs': {num: float(prob) for num, prob in sorted_back[1:4]},
                 'combination_count': self._calculate_dantuo_combinations(len(front_dan), len(front_tuo), len(back_dan), len(back_tuo)),
                 'description': f'前区胆{len(front_dan)}拖{len(front_tuo)}，后区胆{len(back_dan)}拖{len(back_tuo)}'
             })

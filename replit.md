@@ -18,6 +18,10 @@ The system is built with Python 3.11 and Flask, using SQLAlchemy with a PostgreS
 The web interface includes:
 - **Data Collection Button:** One-click to fetch latest lottery data.
 - **AI Prediction Functionality:** Generate recommended numbers based on chosen play styles.
+  - **基础推荐 (Basic):** 1 set of 5 front + 2 back numbers
+  - **多组推荐 (Multiple):** 3 sets of combinations
+  - **复式推荐 (Top Probability):** 10 front + 5 back high-probability numbers
+  - **胆拖推荐 (Dare-Drag):** 2胆6拖 for front zone + 1胆3拖 for back zone (60 combinations)
 - **Statistical Analysis:** Displays hot and cold numbers.
 - **Historical Records:** Browsing of past lottery results.
 - **Prediction Analysis UI:** View predictions vs. actual outcomes and hit rates.
