@@ -299,10 +299,7 @@ def count_patterns_around(matrix, row, col, patterns=None):
         step = pattern.get('step', 1)
         offsets = pattern['offsets']
 
-        # 如果目标位置不是锚点，可能也是图案的一部分
-        # 检查目标位置在图案中的每个相对位置
         for anchor_idx, (dr0, dc0) in enumerate(offsets):
-            # 假设目标在anchor位置
             anchor_row = row - dr0 * step
             anchor_col = col - dc0 * step
 
@@ -311,7 +308,6 @@ def count_patterns_around(matrix, row, col, patterns=None):
             if anchor_row >= n_periods or anchor_col > max_num:
                 continue
 
-            # 验证整个图案
             valid = True
             for dr, dc in offsets:
                 r = anchor_row + dr * step
@@ -327,6 +323,67 @@ def count_patterns_around(matrix, row, col, patterns=None):
                 counts[name] += 1
 
     return dict(counts)
+
+
+def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
+    """
+    统计图案并应用时间衰减（越远的图案权重越低）
+
+    参数:
+        matrix - 布尔矩阵
+        row, col - 目标位置
+        patterns - 图案列表
+        decay - 衰减系数 (每期衰减, 0.95≈50期后≈8%)
+
+    返回:
+        dict: {pattern_name: (count, weighted_sum)}
+    """
+    if patterns is None:
+        patterns = PATTERN_TEMPLATES
+
+    result = {}
+    n_periods, n_cols = matrix.shape
+    max_num = n_cols - 1
+
+    for pattern in patterns:
+        name = pattern['name']
+        step = pattern.get('step', 1)
+        offsets = pattern['offsets']
+        total_count = 0
+        total_weighted = 0.0
+
+        for anchor_idx, (dr0, dc0) in enumerate(offsets):
+            anchor_row = row - dr0 * step
+            anchor_col = col - dc0 * step
+
+            if anchor_row < 0 or anchor_col < 1:
+                continue
+            if anchor_row >= n_periods or anchor_col > max_num:
+                continue
+
+            valid = True
+            min_row = n_periods
+            for dr, dc in offsets:
+                r = anchor_row + dr * step
+                c = anchor_col + dc * step
+                if r < 0 or r >= n_periods or c < 1 or c > max_num:
+                    valid = False
+                    break
+                if not matrix[r][c]:
+                    valid = False
+                    break
+                if r < min_row:
+                    min_row = r
+
+            if valid:
+                total_count += 1
+                total_weighted += decay ** min_row
+
+        result[name] = (total_count, round(total_weighted, 4))
+        if total_count > 0:
+            result[name] = (total_count, round(total_weighted, 4))
+
+    return result
 
 
 def get_pattern_label(name):
