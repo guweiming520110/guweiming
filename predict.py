@@ -7,16 +7,105 @@
 import sys
 import os
 from pathlib import Path
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pattern_learner.core import PatternLearner
 
 
-def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0):
-    """预测大乐透"""
+# ==================== 模型融合模块 ====================
+
+ML_FUSION_WEIGHT = 0.3  # RF/XGBoost 模型融合权重（图案引擎占 1 - ML_FUSION_WEIGHT）
+
+def _fusion_sort(pattern_scores, ml_probs, weight=ML_FUSION_WEIGHT):
+    """
+    将图案引擎评分与 ML 模型的概率进行加权融合排序
+
+    pattern_scores: [(number, score, detail), ...]
+    ml_probs: {number: probability, ...}  (None 时不融合)
+
+    返回: [(number, fused_score, detail), ...]
+    """
+    if ml_probs is None:
+        return pattern_scores
+
+    # 归一化图案引擎评分
+    pattern_max = max((s for _, s, _ in pattern_scores), default=1)
+    pattern_min = min((s for _, s, _ in pattern_scores), default=0)
+    pattern_range = max(pattern_max - pattern_min, 1e-8)
+
+    fused = []
+    for num, score, detail in pattern_scores:
+        pattern_norm = (score - pattern_min) / pattern_range
+        ml_prob = ml_probs.get(num, 0.0)
+        # 加权融合
+        fused_score = (1 - weight) * pattern_norm + weight * ml_prob
+        fused.append((num, round(fused_score * 100, 1), detail))
+
+    fused.sort(key=lambda x: x[1], reverse=True)
+    return fused
+
+
+def _load_ml_models(lottery_type='dlt'):
+    """加载已训练的 RF/XGBoost 模型"""
+    if lottery_type not in ('dlt', 'ssq'):
+        return None
+
+    try:
+        from ml_models import LotteryPredictor
+        predictor = LotteryPredictor(lottery_type)
+        predictor.load_models(path='models')
+        print(f"✅ 已加载 {lottery_type.upper()} RF/XGBoost 模型")
+        return predictor
+    except Exception as e:
+        print(f"  ⚠️ ML 模型加载失败: {e}")
+        return None
+
+
+def _get_ml_probs(predictor, df, lottery_type='dlt'):
+    """获取 ML 模型对每个号码的概率"""
+    if predictor is None or df is None:
+        return None
+
+    try:
+        from feature_engineering import FeatureEngineer
+        from feature_config import get_all_features
+
+        fe = FeatureEngineer(df, lottery_type=lottery_type)
+        df_feat = fe.extract_all_features()
+        feature_cols = get_all_features()
+
+        # 取最后一行作为最新特征
+        latest = df_feat.iloc[-1:][feature_cols].fillna(0)
+
+        result = predictor.predict_with_probabilities(latest)
+        front_probs = {}
+        back_probs = {}
+
+        # 从 predict_with_probabilities 返回的 dict 提取概率
+        # front_lstm/lstm/transformer 没有就不处理
+        for pred_info in result.get('predictions', []):
+            fp = pred_info.get('front_probs', {})
+            for num, prob in fp.items():
+                if num not in front_probs or prob > front_probs[num]:
+                    front_probs[num] = prob
+            bp = pred_info.get('back_probs', {})
+            for num, prob in bp.items():
+                if num not in back_probs or prob > back_probs[num]:
+                    back_probs[num] = prob
+
+        return front_probs, back_probs
+    except Exception as e:
+        print(f"  ⚠️ ML 预测失败: {e}")
+        return None
+
+
+def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0,
+                use_ml=False, ml_weight=ML_FUSION_WEIGHT):
+    """预测大乐透（图案引擎 + ML 模型融合）"""
     print("\n" + "█" * 55)
-    print("  超级大乐透 · 几何图案预测")
+    print("  超级大乐透 · 几何图案预测 + ML 融合")
     print("█" * 55)
 
     learner_front = PatternLearner('dlt')
@@ -28,6 +117,19 @@ def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0):
     learner_back.train(df, num_periods=num_periods)
     back_preds, back_report = learner_back.predict_with_report(top_k=top_k_back)
     print(back_report)
+
+    # ---- ML 模型融合 ----
+    if use_ml:
+        ml = _load_ml_models('dlt')
+        ml_result = _get_ml_probs(ml, df, 'dlt')
+        if ml_result:
+            front_ml, back_ml = ml_result
+            if front_ml:
+                front_preds = _fusion_sort(front_preds, front_ml, weight=ml_weight)
+                print(f"🔀 ML 融合完成 (图案={1-ml_weight:.0%} + ML={ml_weight:.0%})")
+            if back_ml:
+                back_preds = _fusion_sort(back_preds, back_ml, weight=ml_weight)
+                print(f"🔀 后区 ML 融合完成")
 
     backtest_result = None
     if backtest_n > 0:
@@ -45,10 +147,11 @@ def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0):
     return front_preds, back_preds, front_report, back_report
 
 
-def predict_ssq(df, top_k_front=12, top_k_back=3, num_periods=50, backtest_n=0):
-    """预测双色球"""
+def predict_ssq(df, top_k_front=12, top_k_back=3, num_periods=50, backtest_n=0,
+                use_ml=False, ml_weight=ML_FUSION_WEIGHT):
+    """预测双色球（图案引擎 + ML 模型融合）"""
     print("\n" + "█" * 55)
-    print("  双色球 · 几何图案预测")
+    print("  双色球 · 几何图案预测 + ML 融合")
     print("█" * 55)
 
     learner_front = PatternLearner('ssq')
@@ -60,6 +163,19 @@ def predict_ssq(df, top_k_front=12, top_k_back=3, num_periods=50, backtest_n=0):
     learner_back.train(df, num_periods=num_periods)
     back_preds, back_report = learner_back.predict_with_report(top_k=top_k_back)
     print(back_report)
+
+    # ---- ML 模型融合 ----
+    if use_ml:
+        ml = _load_ml_models('ssq')
+        ml_result = _get_ml_probs(ml, df, 'ssq')
+        if ml_result:
+            front_ml, back_ml = ml_result
+            if front_ml:
+                front_preds = _fusion_sort(front_preds, front_ml, weight=ml_weight)
+                print(f"🔀 ML 融合完成 (图案={1-ml_weight:.0%} + ML={ml_weight:.0%})")
+            if back_ml:
+                back_preds = _fusion_sort(back_preds, back_ml, weight=ml_weight)
+                print(f"🔀 后区 ML 融合完成")
 
     if backtest_n > 0:
         print("\n正在回测红球...")
@@ -120,14 +236,14 @@ def _print_kl8_hint(front_nums):
     print(f"   (预测号码以黑色圆球+白字显示在第0期位置)")
 
 
-def predict(lottery_type='dlt', df=None, periods=50):
+def predict(lottery_type='dlt', df=None, periods=50, use_ml=False):
     """统一预测入口"""
     if lottery_type == 'dlt':
-        return predict_dlt(df, num_periods=periods)
+        return predict_dlt(df, num_periods=periods, use_ml=use_ml)
     elif lottery_type == 'kl8':
         return predict_kl8(df, num_periods=periods)
     elif lottery_type == 'ssq':
-        return predict_ssq(df, num_periods=periods)
+        return predict_ssq(df, num_periods=periods, use_ml=use_ml)
     else:
         raise ValueError(f"不支持的彩种: {lottery_type}")
 
@@ -142,6 +258,7 @@ if __name__ == '__main__':
     parser.add_argument('--backtest', type=int, default=0, help='回测期数')
     parser.add_argument('--force', action='store_true', help='强制预测（跳过待验证检查）')
     parser.add_argument('--no-notify', action='store_true', help='不推送钉钉通知')
+    parser.add_argument('--ml', action='store_true', help='启用 RF/XGBoost 模型融合')
     parser.add_argument('--report', action='store_true', help='发送累计统计报告并退出')
     parser.add_argument('--pending', action='store_true', help='查看待验证的预测记录')
     args = parser.parse_args()
@@ -289,14 +406,14 @@ if __name__ == '__main__':
         from generate_charts import load_data
         df = load_data()
         if df is not None:
-            result = predict_dlt(df, num_periods=args.periods, backtest_n=args.backtest)
+            result = predict_dlt(df, num_periods=args.periods, backtest_n=args.backtest, use_ml=args.ml)
             if result:
                 front_preds, back_preds, front_report, back_report = result
     elif lottery_type == 'ssq':
         from generate_charts import load_data
         df = load_data(lottery_type='ssq', limit=args.periods)
         if df is not None:
-            result = predict_ssq(df, num_periods=args.periods, backtest_n=args.backtest)
+            result = predict_ssq(df, num_periods=args.periods, backtest_n=args.backtest, use_ml=args.ml)
             if result:
                 front_preds, back_preds, front_report, back_report = result
 

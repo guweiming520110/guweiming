@@ -121,7 +121,7 @@ def main():
     try:
         df = load_data()
         if df is not None:
-            result = pred_mod.predict_dlt(df, num_periods=50, backtest_n=5)
+            result = pred_mod.predict_dlt(df, num_periods=50, backtest_n=5, use_ml=True)
             if result:
                 front_preds, back_preds, front_report, back_report = result
                 front_top5 = [str(n) for n, s, d in front_preds[:5]]
