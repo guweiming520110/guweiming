@@ -49,7 +49,8 @@ class LotteryMatrix:
         data = df.copy()
         if num_periods:
             data = data.tail(num_periods)
-        data = data.reset_index(drop=True)
+        # 数据源为 period ASC（最旧在前），翻转为最新在前，保证 matrix[0]=最新一期
+        data = data.iloc[::-1].reset_index(drop=True)
 
         self.n_periods = len(data)
         self.matrix = np.zeros((self.n_periods, self.max_num + 1), dtype=bool)
@@ -68,7 +69,8 @@ class LotteryMatrix:
         data = df.copy()
         if num_periods:
             data = data.tail(num_periods)
-        data = data.reset_index(drop=True)
+        # 数据源为 period ASC（最旧在前），翻转为最新在前，保证 matrix[0]=最新一期
+        data = data.iloc[::-1].reset_index(drop=True)
 
         self.n_periods = len(data)
         self.matrix = np.zeros((self.n_periods, self.max_num + 1), dtype=bool)
@@ -86,7 +88,8 @@ class LotteryMatrix:
         data = df.copy()
         if num_periods:
             data = data.tail(num_periods)
-        data = data.reset_index(drop=True)
+        # 数据源为 period ASC（最旧在前），翻转为最新在前，保证 matrix[0]=最新一期
+        data = data.iloc[::-1].reset_index(drop=True)
 
         self.n_periods = len(data)
         self.matrix = np.zeros((self.n_periods, self.max_num + 1), dtype=bool)
@@ -108,7 +111,8 @@ class LotteryMatrix:
         data = df.copy()
         if num_periods:
             data = data.tail(num_periods)
-        data = data.reset_index(drop=True)
+        # 数据源为 period ASC（最旧在前），翻转为最新在前，保证 matrix[0]=最新一期
+        data = data.iloc[::-1].reset_index(drop=True)
 
         self.n_periods = len(data)
         self.matrix = np.zeros((self.n_periods, self.max_num + 1), dtype=bool)
@@ -126,7 +130,8 @@ class LotteryMatrix:
         data = df.copy()
         if num_periods:
             data = data.tail(num_periods)
-        data = data.reset_index(drop=True)
+        # 数据源为 period ASC（最旧在前），翻转为最新在前，保证 matrix[0]=最新一期
+        data = data.iloc[::-1].reset_index(drop=True)
 
         self.n_periods = len(data)
         self.matrix = np.zeros((self.n_periods, self.max_num + 1), dtype=bool)

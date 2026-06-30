@@ -258,7 +258,8 @@ if __name__ == '__main__':
     parser.add_argument('--tune-ml', action='store_true', help='同时优化 ML 融合权重')
     parser.add_argument('--show-best', action='store_true', help='显示已保存的最佳参数')
     parser.add_argument('--load-best', action='store_true', help='加载最佳参数到 core.py（不调参）')
-    parser.add_argument('--save', action='store_true', help='调参后保存最佳参数')
+    parser.add_argument('--save', action='store_true', default=True, help='调参后保存最佳参数(默认开启)')
+    parser.add_argument('--no-save', dest='save', action='store_false', help='调参后不保存最佳参数')
     args = parser.parse_args()
 
     if args.show_best:
@@ -281,5 +282,5 @@ if __name__ == '__main__':
         tune_ml=args.tune_ml,
     )
 
-    if args.save or True:
+    if args.save:
         save_best_params(study, lottery_type=args.type, tune_ml=args.tune_ml)

@@ -139,6 +139,73 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
             print("请先运行: python kl8_data.py")
             return
 
+        # 验证模式：若未指定预测号码，从数据库自动加载上次预测
+        target_period = None  # 预测对应的目标期号
+        if verify and not predict_front:
+            try:
+                conn_v = sqlite3.connect(str(DB_PATH))
+                cur_v = conn_v.execute(
+                    """SELECT target_period, front_numbers FROM prediction_records
+                       WHERE lottery_type='kl8' AND (actual_front IS NULL OR actual_front = '')
+                       ORDER BY id DESC LIMIT 1""",
+                )
+                row = cur_v.fetchone()
+                conn_v.close()
+                if row:
+                    target_period = row[0]
+                    predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
+                    print(f"  📋 从数据库加载预测(期{target_period}): {predict_front}")
+                else:
+                    # 尝试加载已验证的最近记录（重新生成验证走势图）
+                    conn_v = sqlite3.connect(str(DB_PATH))
+                    cur_v = conn_v.execute(
+                        """SELECT target_period, front_numbers FROM prediction_records
+                           WHERE lottery_type='kl8' AND actual_front != ''
+                           ORDER BY id DESC LIMIT 1""",
+                    )
+                    row = cur_v.fetchone()
+                    conn_v.close()
+                    if row:
+                        target_period = row[0]
+                        predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
+                        print(f"  📋 从数据库加载已验证预测(期{target_period}): {predict_front}")
+            except Exception as e:
+                print(f"  ⚠️ 加载预测记录失败: {e}")
+
+        # 验证模式：检查预测命中，并保存验证结果到数据库
+        verified_front_set = None  # None=未验证, set()=已验证无命中, {1,2}=已验证有命中
+        if verify and predict_front and len(df) > 0:
+            latest = df.iloc[-1]
+            actual_front = latest['num_list']
+            verified_front_set = set(predict_front) & set(actual_front)
+            if verified_front_set:
+                print(f"  ✅ 预测正确号码: {sorted(verified_front_set)} ({len(verified_front_set)}/{len(predict_front)})")
+            else:
+                print(f"  本期预测未命中")
+
+            # 保存验证结果到数据库，使历史期号行也能显示黄色标记
+            if target_period:
+                try:
+                    from notifier import save_verification, send_verification
+                    front_str = ','.join(str(n) for n in predict_front)
+                    save_verification(
+                        'kl8', target_period,
+                        front_str, '',
+                        actual_front, [],
+                        verified_front_set, set()
+                    )
+                    print(f"  💾 验证结果已保存到数据库(期{target_period})")
+                    # 推送钉钉通知
+                    try:
+                        send_verification('kl8', predict_front, [],
+                                          verified_front_set, set(),
+                                          actual_front, [])
+                        print(f"  ✅ 钉钉验证推送成功")
+                    except Exception as e:
+                        print(f"  ⚠️ 钉钉推送异常: {e}")
+                except Exception as e:
+                    print(f"  ⚠️ 保存验证结果失败: {e}")
+
         print("=" * 50)
         print(f"  {cfg['name']} · 综合走势图生成器")
         print("=" * 50)
@@ -146,13 +213,19 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         if predict_front:
             print(f"  🔮 预测号码: {predict_front}")
 
+        # 验证模式下不传 predicted_front：已验证的预测由 history_preds
+        # 在对应的历史期号行上显示（黄色=命中，红色=未命中）
+        # 未来行留给新的预测（如果有的话）
+        chart_pred_front = None if verify else predict_front
+
         generate_composite_chart(
             df, lottery_type='kl8',
             network_periods=min(20, len(df)),
             trend_periods=min(30, len(df)),
             freq_periods=min(100, len(df)),
             output_dir=output_dir,
-            predicted_front=predict_front,
+            predicted_front=chart_pred_front,
+            # 不传 verified_front：验证结果由 history_preds（数据库）在历史期号行显示
         )
     else:
         # 加载数据
@@ -202,15 +275,19 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                 print(f"  ⚠️ 加载预测记录失败: {e}")
 
         # 验证模式：检查预测命中
-        verified_front_set, verified_back_set = set(), set()
+        verified_front_set, verified_back_set = None, None  # None=未验证
         if verify and predict_front:
             front_cnt = cfg['front_count']
             back_cnt = cfg['back_count']
-            if hasattr(latest := df.iloc[-1], 'to_dict') or True:
-                latest = df.iloc[-1]
+            latest = df.iloc[-1]
             if lottery_type == 'kl8':
-                # kl8 无后区验证逻辑
-                pass
+                # 快乐8验证逻辑
+                actual_front = latest['num_list']
+                verified_front_set = set(predict_front) & set(actual_front)
+                if verified_front_set:
+                    print(f"  ✅ 预测正确号码: {sorted(verified_front_set)} ({len(verified_front_set)}/{len(predict_front)})")
+                else:
+                    print(f"  本期预测未命中")
             else:
                 actual_front = [int(latest[f'front_{k}']) for k in range(1, front_cnt + 1)]
                 actual_back = [int(latest[f'back_{k}']) for k in range(1, back_cnt + 1)]

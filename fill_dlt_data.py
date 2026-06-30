@@ -50,8 +50,8 @@ def get_db_status():
     for i in range(len(periods) - 1):
         gap = periods[i + 1] - periods[i]
         if gap > 1:
-            # 检查是否为跨年
-            if str(periods[i])[:3] == str(periods[i + 1])[:3]:
+            # 检查是否为同年内缺失（期号为 YYNNN，前2位是年份）
+            if str(periods[i])[:2] == str(periods[i + 1])[:2]:
                 gaps.append((periods[i], periods[i + 1], gap - 1))
 
     return {
@@ -109,8 +109,8 @@ def parse_dlt_numbers(html):
                 if date_match:
                     date_str = f"{date_match.group(1)}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
                 else:
-                    # 从期号推算大致年份
-                    year = period[:4]
+                    # 从期号推算大致年份（期号为 YYNNN，前2位是年份后两位）
+                    year = f"20{period[:2]}"
                     date_str = f"{year}-01-01"
 
                 records.append({
@@ -224,12 +224,12 @@ def fill_missing_data():
     latest = status['latest_period']
 
     # 确定要获取的范围：从最新期+1到当前最新
-    # 先试探最新期号
+    # 先试探最新期号（期号为 YYNNN，前2位是年份后两位）
     test_periods = []
-    year = int(str(latest)[:4])
+    year = int(str(latest)[:2])
     for y in [year, year + 1]:
         for p in range(1, 160, 10):
-            test_periods.append(int(f"{y}{p:03d}"))
+            test_periods.append(int(f"{y:02d}{p:03d}"))
 
     # 从最新期开始，分批获取后续数据
     batch_start = latest + 1

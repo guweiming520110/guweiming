@@ -82,6 +82,40 @@ def type_name(lottery_type):
     cfg = get_config(lottery_type)
     return cfg['name']
 
+
+def next_period(lottery_type, period):
+    """
+    根据当前期号推算下一期期号，正确处理跨年滚动。
+
+    期号格式：
+      - dlt/ssq: 5位 YYNNN（如 26072 = 2026年第72期），每年约150期
+      - kl8:     7位 YYYYNNN（如 2026170 = 2026年第170期），每天1期约365期
+
+    跨年规则：当本年序号已达到该彩种年度最大期数附近时，下一期归零到次年第1期。
+    注意：这是基于历史规律的推断，真实期号以官方公布为准。
+    """
+    period = str(period).strip()
+
+    if lottery_type == 'kl8':
+        # YYYYNNN：年份4位 + 序号3位起（实际可能更多位），按总长拆分
+        year = int(period[:4])
+        seq = int(period[4:])
+        # 快乐8每天开一期，平年365期/闰年366期，超过即滚动到次年
+        days_in_year = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
+        if seq >= days_in_year:
+            return f"{year + 1}001"
+        return f"{year}{seq + 1:03d}"
+
+    # dlt / ssq：YYNNN
+    year = int(period[:2])
+    seq = int(period[2:])
+    # 大乐透/双色球每年约151-153期，留出余量用153作为滚动阈值
+    YEARLY_MAX = 153
+    if seq >= YEARLY_MAX:
+        return f"{year + 1:02d}001"
+    return f"{year:02d}{seq + 1:03d}"
+
+
 if __name__ == '__main__':
     for k, v in LOTTERY_TYPES.items():
         print(f"{k}: {v['name']} ({v['front_name']}{v['front_min']}-{v['front_max']}选{v['front_count']})")

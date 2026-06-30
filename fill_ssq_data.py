@@ -41,7 +41,12 @@ def get_ssq_status():
 
 
 def fetch_ssq_history_page(start=1, end=100):
-    """从500彩票网获取双色球历史数据页面"""
+    """从500彩票网获取双色球历史数据页面
+
+    注意：500.com 双色球 history.shtml 页面不支持 start/end 区间参数，
+    实际仅返回默认页（约最近100期）。start/end 暂保留以兼容调用方，但不生效。
+    如需按区间补全历史，需改用支持区间的接口。
+    """
     url = f'https://datachart.500.com/ssq/history/history.shtml'
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)

@@ -75,11 +75,11 @@ def parse_kl8_numbers(html):
     从500彩票网走势图HTML中解析出每期的开奖号码
 
     HTML结构:
-      - 数据在 <div id="container"> 内的 chartTbl 表格中
+      - 数据在 <tbody id="tdata"> 内
       - 每行 <tr> 对应一期，首列为期号
       - 后续80列为号码1-80
-      - 开奖号码以红/蓝色圆球图片或彩色数字显示
-      - 遗漏值以灰色数字显示
+      - 开奖号码的td带有 class="chartBall01"
+      - 列索引（从1开始）就是号码本身
 
     返回:
         list of dict: [{'period':'2026157', 'numbers':[1,3,5,...]}, ...]
@@ -89,83 +89,97 @@ def parse_kl8_numbers(html):
 
     soup = BeautifulSoup(html, 'html.parser')
 
-    # 定位数据表格
-    # 方法1: 查找id为container的div
-    container = soup.find('div', id='container')
-    if not container:
-        # 方法2: 查找chartTbl表格
-        table = soup.find('table', class_=re.compile(r'chartTbl', re.I))
-        if not table:
-            # 方法3: 直接找包含期号数字的表格
-            tables = soup.find_all('table')
-            for t in tables:
-                if t.get('width') == '100%' and not t.get('class'):
-                    continue
-                if t.find('td', string=re.compile(r'\d{7}')):
-                    table = t
-                    break
+    # 优先查找 tbody id="tdata" (2026年网站结构)
+    tbody = soup.find('tbody', id='tdata')
+    if tbody:
+        records = _parse_from_tbody(tbody)
+        if records:
+            return records
 
-    # 如果以上都没找到，直接从HTML文本中提取数据
-    records = _parse_from_text(html)
-    if records:
-        return records
-
-    # 尝试从table解析
+    # 备用方法：查找chartTbl表格
+    table = soup.find('table', class_=re.compile(r'chartTbl', re.I))
     if table:
         records = _parse_from_table(table)
         if records:
             return records
 
+    # 最后备用：直接从HTML文本提取
+    records = _parse_from_text(html)
+    if records:
+        return records
+
     return None
+
+
+def _parse_from_tbody(tbody):
+    """从 tbody id="tdata" 解析（2026年网站结构）"""
+    records = []
+    rows = tbody.find_all('tr')
+    for row in rows:
+        cells = row.find_all('td')
+        if len(cells) < 5:
+            continue
+
+        # 首列期号
+        period_td = cells[0].get_text(strip=True)
+        period_match = re.match(r'(\d{7})', period_td)
+        if not period_match:
+            continue
+        period = period_match.group(1)
+
+        # 关键修正: 列索引（从1开始）就是号码本身
+        # class="chartBall01" 的td表示开奖号码
+        numbers = []
+        for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
+            if idx > KL8_NUMS:
+                break
+            # 检查是否是开奖号码
+            td_class = td.get('class', [])
+            if 'chartBall01' in td_class or 'chartBall02' in td_class:
+                numbers.append(idx)
+
+        if len(numbers) >= KL8_DRAWN:
+            records.append({
+                'period': period,
+                'numbers': sorted(numbers[:KL8_DRAWN])
+            })
+
+    return records if records else None
 
 
 def _parse_from_text(html):
     """
     直接从HTML文本提取开奖号码
-    从markdown输出中我们看到数据是以表格形式呈现的，
-    每行的期号后跟着80个数字，其中值等于列号的代表开奖号码
+    查找 class="chartBall01" 的td标签，列索引就是号码
     """
     records = []
 
-    # 查找数据行: <tr> 包含期号 <td> 和80个号码 <td>
-    # 通过匹配 <tr> 内的内容来提取
+    # 查找数据行: <tr> 包含期号 <td>
     row_pattern = r'<tr[^>]*>(.*?)</tr>'
-    td_pattern = r'<td[^>]*>(.*?)</td>'
-
     rows = re.findall(row_pattern, html, re.DOTALL)
+
     for row_html in rows:
-        # 提取所有td
-        cells = re.findall(td_pattern, row_html, re.DOTALL)
-        if len(cells) < 5:
-            continue
-
-        # 清理HTML标签
-        clean_cells = []
-        for c in cells:
-            # 取纯文本
-            text = re.sub(r'<[^>]+>', '', c).strip()
-            clean_cells.append(text)
-
-        # 第一列应该是期号（7位数字）
-        period_match = re.match(r'(\d{7})', clean_cells[0])
+        # 提取期号
+        period_match = re.search(r'<td[^>]*>\s*(\d{7})\s*</td>', row_html)
         if not period_match:
             continue
         period = period_match.group(1)
 
-        # 后续80列是号码数据
-        # 如果一个格子的值等于列索引，则该号码被开出
-        # 注意：数据列可能有遗漏值标记，开奖号码会以彩色显示
+        # 提取所有td，找到包含 chartBall01 的td，它的位置就是号码
+        td_pattern = r'<td[^>]*class="[^"]*(chartBall01|chartBall02)[^"]*"[^>]*>.*?</td>'
+        td_matches = list(re.finditer(td_pattern, row_html))
+
+        # 找出这些td在该行中的位置索引（从1开始）
+        all_td_pattern = r'<td[^>]*>.*?</td>'
+        all_tds = list(re.finditer(all_td_pattern, row_html))
+
         numbers = []
-        for idx in range(1, min(len(clean_cells), KL8_NUMS + 1)):
-            val = clean_cells[idx].strip()
-            if not val:
-                continue
-            try:
-                n = int(val)
-            except ValueError:
-                continue
-            if n == idx:  # 值等于列号 = 开奖号码
-                numbers.append(n)
+        for ball_match in td_matches:
+            # 找到这个td在所有td中的位置
+            for idx, td_match in enumerate(all_tds[1:], 1):  # 跳过期号td
+                if td_match.start() == ball_match.start():
+                    numbers.append(idx)
+                    break
 
         if len(numbers) >= KL8_DRAWN:
             records.append({
@@ -192,24 +206,13 @@ def _parse_from_table(table):
         period = period_match.group(1)
 
         numbers = []
-        for idx, td in enumerate(cells[1:], 1):
+        for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
             if idx > KL8_NUMS:
                 break
-            text = td.get_text(strip=True)
-            if not text:
-                continue
-            try:
-                n = int(text)
-            except ValueError:
-                continue
-            # 检查是否有红/蓝样式（开奖号码通常有特殊样式）
-            has_ball = (
-                td.find('font', attrs={'color': re.compile(r'red|blue|ff|#', re.I)})
-                or td.find('span', class_=re.compile(r'red|blue|ball', re.I))
-                or td.find('img', src=re.compile(r'red|blue'))
-            )
-            if n == idx:
-                numbers.append(n)
+            # 检查是否是开奖号码
+            td_class = td.get('class', [])
+            if 'chartBall01' in td_class or 'chartBall02' in td_class:
+                numbers.append(idx)
 
         if len(numbers) >= KL8_DRAWN:
             records.append({
@@ -251,11 +254,13 @@ def save_to_db(records):
     for r in records:
         try:
             numbers_str = ','.join(str(n) for n in r['numbers'])
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
                 (r['period'], r.get('date', ''), numbers_str)
             )
-            if conn.total_changes > 0:
+            # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
+            # 不能用连接级累计的 total_changes 判断
+            if cur.rowcount > 0:
                 saved += 1
         except Exception:
             continue

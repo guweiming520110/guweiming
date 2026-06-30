@@ -21,17 +21,19 @@ SCORE_PARAMS = {
     'rarity_max': 5.0,          # 稀有度上限
     'span_bonus_factor': 0.5,   # 跨期连续因子
     'span_bonus_cap': 2.5,      # 跨期加成上限
-    'horiz_penalty_max': 0.8,   # 水平惩罚系数 (0.8=纯水平×0.2, 同旧版)
-    'diversity_factor': 0.05,   # 多样性奖励/种
-    'omission_factor': 0.10,    # 遗漏值奖励系数
-    'omission_max_mult': 2.0,   # 遗漏倍数上限
+    'horiz_penalty_max': 0.4,   # 水平惩罚系数 (降低惩罚，原0.8)
+    'diversity_factor': 0.10,   # 多样性奖励/种 (翻倍，原0.05)
+    'omission_factor': 0.15,    # 遗漏值奖励系数 (提高，原0.10)
+    'omission_max_mult': 3.5,   # 遗漏倍数上限 (提高，原2.0)
     'time_decay': 0.95,         # 时间衰减系数 (每期衰减5%)
-    'time_decay_weight': 0.3,   # 时间衰减占评分的权重 (0=禁用, 1=完全替代)
+    'time_decay_weight': 0.5,   # 时间衰减占评分的权重 (提高，原0.3)
     'hotness_window': 10,       # 近期热度窗口
     'hotness_bonus': 0.05,      # 冷号每期额外加成 (热度1/频率的奖励)
     'adaptive_window': False,   # 是否启用自适应窗口
     'window_max': 80,           # 自适应窗口最大期数
     'window_min': 20,           # 自适应窗口最小期数
+    'last_n_penalty_factor': 0.8,  # 近N期号码降权系数 (新增)
+    'last_n_penalty_count': 2,     # 对最近N期号码降权 (新增)
 }
 
 
@@ -368,16 +370,39 @@ class PatternLearner:
             omission_bonus = self._calc_omission_bonus(num, omissions, P)
             score += omission_bonus
 
-            # --- P3b: 冷热号因子 (热号温和降权) ---
+            # --- P3b: 冷热号因子 (热号降权, 冷号升权) ---
+            # 快乐8密度低，提高敏感度：超过平均密度就调整
+            expected_density = self.pick_count / self.num_range  # 0.25 for kl8
             hot = hotness.get(num, 0)
+
             if hot > 0:
-                # hot = 近期出现频率, 0~1
-                # 热号频率超过正常预期(该彩种平均密度)时降权
-                expected_density = self.pick_count / self.num_range
-                if hot > expected_density * 1.5:  # 超过预期1.5倍才降权
-                    hot_penalty = 1.0 - (hot - expected_density * 1.5) * 0.3
-                    hot_penalty = max(0.7, hot_penalty)  # 最多降30%
+                # 热号降权：超过平均密度就降，降权幅度更大
+                # 快乐8：近期出现3次以上就算热号
+                if hot > expected_density * 1.2:
+                    hot_penalty = 1.0 - (hot - expected_density * 1.2) * 0.8  # 最多降80%
+                    hot_penalty = max(0.2, hot_penalty)  # 更激进的降权
                     score *= hot_penalty
+            else:
+                # 冷号升权：近期完全没出现过的号码升权
+                cold_bonus = 1.0 + (expected_density * 0.5)  # 冷号+12.5%
+                score *= cold_bonus
+
+            # --- P3c: 最近N期开奖号码直接降权 (针对快乐8) ---
+            # 最近几期刚开过的号码，再开概率相对低，直接降权
+            if self.matrix is not None and self.matrix.n_periods > 0:
+                last_n = P.get('last_n_penalty_count', 2)
+                penalty_factor = P.get('last_n_penalty_factor', 0.8)
+                recent_nums = set()
+                max_i = min(last_n, self.matrix.n_periods)
+                # 收集最近N期的所有开奖号码 (matrix[0]=最新)，越近惩罚越重
+                for i in range(max_i):
+                    for n in range(1, self.num_range + 1):
+                        if self.matrix.matrix[i][n]:
+                            recent_nums.add(n)
+                            if num == n:
+                                # 计算惩罚，越近惩罚越重
+                                distance = i + 1  # i=0 → distance=1 = 最近一期
+                                score *= penalty_factor ** distance
 
             results.append((num, round(score, 2), detail))
 
@@ -490,6 +515,10 @@ class PatternLearner:
         )
         lines.append(f"\n  总图案数: {total_patterns}")
         lines.append(f"  覆盖期数: {self.matrix.n_periods}期")
+
+        # 添加号码汇总
+        top_nums = [n for n, s, d in predictions[:self.pick_count]]
+        lines.append(f"\n  🎯 预测号码汇总: {sorted(top_nums)}")
         lines.append(f"{'='*55}")
 
         return predictions, '\n'.join(lines)

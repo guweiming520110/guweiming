@@ -212,6 +212,234 @@ PATTERN_TEMPLATES = [
         'complexity': 'A',
         'base_score': 1.5,
     },
+
+    # ---- 9. 对角线扩展（B级） ----
+    {
+        'name': 'diag_se_4',
+        'label': '对角↘4连',
+        'offsets': [(0, 0), (1, 1), (2, 2), (3, 3)],
+        'step': 1,
+        'min_rows': 4,
+        'complexity': 'B',
+        'base_score': 1.5,
+    },
+    {
+        'name': 'diag_sw_4',
+        'label': '对角↙4连',
+        'offsets': [(0, 0), (1, -1), (2, -2), (3, -3)],
+        'step': 1,
+        'min_rows': 4,
+        'complexity': 'B',
+        'base_score': 1.5,
+    },
+    {
+        'name': 'diag_se_gap3',
+        'label': '对角↘隔2空',
+        'offsets': [(0, 0), (3, 3), (6, 6)],
+        'step': 1,
+        'min_rows': 7,
+        'complexity': 'B',
+        'base_score': 1.0,
+    },
+    {
+        'name': 'diag_sw_gap3',
+        'label': '对角↙隔2空',
+        'offsets': [(0, 0), (3, -3), (6, -6)],
+        'step': 1,
+        'min_rows': 7,
+        'complexity': 'B',
+        'base_score': 1.0,
+    },
+
+    # ---- 10. 折线图案（A级） ----
+    {
+        'name': 'z_shape',
+        'label': 'Z字形',
+        'offsets': [(0, 0), (0, 1), (1, 1), (1, 2)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'A',
+        'base_score': 1.4,
+    },
+    {
+        'name': 'n_shape',
+        'label': 'N字形',
+        'offsets': [(0, 0), (1, 0), (1, 1), (2, 1)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'A',
+        'base_score': 1.4,
+    },
+    {
+        'name': 'step_up',
+        'label': '阶梯上升',
+        'offsets': [(0, 0), (1, 1), (2, 2)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'A',
+        'base_score': 1.2,
+    },
+    {
+        'name': 'step_down',
+        'label': '阶梯下降',
+        'offsets': [(0, 2), (1, 1), (2, 0)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'A',
+        'base_score': 1.2,
+    },
+
+    # ---- 11. 曲线弧形（S级） ----
+    {
+        'name': 'arc_up_3',
+        'label': '上凸弧3点',
+        'offsets': [(0, 1), (1, 0), (1, 2)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'S',
+        'base_score': 2.2,
+    },
+    {
+        'name': 'arc_down_3',
+        'label': '下凹弧3点',
+        'offsets': [(0, 0), (0, 2), (1, 1)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'S',
+        'base_score': 2.2,
+    },
+    {
+        'name': 'arc_up_4',
+        'label': '上凸弧4点',
+        'offsets': [(0, 2), (1, 1), (1, 3), (2, 2)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'S',
+        'base_score': 2.8,
+    },
+    {
+        'name': 'arc_down_4',
+        'label': '下凹弧4点',
+        'offsets': [(0, 1), (1, 0), (1, 2), (2, 1)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'S',
+        'base_score': 2.8,
+    },
+
+    # ---- 12. 对称图案（S级） ----
+    {
+        'name': 'horiz_symmetry',
+        'label': '水平对称',
+        'offsets': [(0, -2), (0, 0), (0, 2)],
+        'step': 1,
+        'min_rows': 1,
+        'complexity': 'S',
+        'base_score': 1.8,
+    },
+    {
+        'name': 'vert_symmetry',
+        'label': '垂直对称',
+        'offsets': [(-1, 0), (0, 0), (1, 0)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'S',
+        'base_score': 1.8,
+    },
+    {
+        'name': 'x_symmetry',
+        'label': '点对称X形',
+        'offsets': [(-1, -1), (-1, 1), (1, -1), (1, 1)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'S',
+        'base_score': 3.0,
+    },
+
+    # ---- 13. 间隔模式（A级） ----
+    {
+        'name': 'skip1_3vert',
+        'label': '跳1竖连3',
+        'offsets': [(0, 0), (2, 0), (4, 0)],
+        'step': 1,
+        'min_rows': 5,
+        'complexity': 'A',
+        'base_score': 1.1,
+    },
+    {
+        'name': 'skip2_3vert',
+        'label': '跳2竖连3',
+        'offsets': [(0, 0), (3, 0), (6, 0)],
+        'step': 1,
+        'min_rows': 7,
+        'complexity': 'A',
+        'base_score': 1.0,
+    },
+    {
+        'name': 'skip1_diag',
+        'label': '跳1斜连3',
+        'offsets': [(0, 0), (2, 2), (4, 4)],
+        'step': 1,
+        'min_rows': 5,
+        'complexity': 'A',
+        'base_score': 1.1,
+    },
+
+    # ---- 14. 复合矩形/角落（A级/S级） ----
+    {
+        'name': 'rect_2x3',
+        'label': '2×3矩形',
+        'offsets': [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'S',
+        'base_score': 2.5,
+    },
+    {
+        'name': 'rect_3x2',
+        'label': '3×2矩形',
+        'offsets': [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],
+        'step': 1,
+        'min_rows': 3,
+        'complexity': 'S',
+        'base_score': 2.5,
+    },
+    {
+        'name': 'corner_missing_tl',
+        'label': '缺左上四角',
+        'offsets': [(0, 1), (1, 0), (1, 1)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'A',
+        'base_score': 1.6,
+    },
+    {
+        'name': 'corner_missing_tr',
+        'label': '缺右上四角',
+        'offsets': [(0, 0), (1, 0), (1, 1)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'A',
+        'base_score': 1.6,
+    },
+    {
+        'name': 'corner_missing_bl',
+        'label': '缺左下四角',
+        'offsets': [(0, 0), (0, 1), (1, 1)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'A',
+        'base_score': 1.6,
+    },
+    {
+        'name': 'corner_missing_br',
+        'label': '缺右下四角',
+        'offsets': [(0, 0), (0, 1), (1, 0)],
+        'step': 1,
+        'min_rows': 2,
+        'complexity': 'A',
+        'base_score': 1.6,
+    },
 ]
 
 # ==================== 图案匹配引擎 ====================
@@ -379,7 +607,7 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                 total_count += 1
                 total_weighted += decay ** min_row
 
-        result[name] = (total_count, round(total_weighted, 4))
+        # 仅在实际匹配到图案时写入，保持与 count_patterns_around 的语义一致
         if total_count > 0:
             result[name] = (total_count, round(total_weighted, 4))
 

@@ -18,6 +18,8 @@ import sys
 import os
 from pathlib import Path
 
+from lottery_types import next_period
+
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 DB_PATH = ROOT_DIR / 'lottery.db'
@@ -42,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description='一键全自动运行')
     parser.add_argument('--no-notify', action='store_true', help='不推送钉钉通知')
     parser.add_argument('--skip-charts', action='store_true', help='跳过走势图生成')
+    
     args = parser.parse_args()
 
     no_notify = args.no_notify
@@ -55,23 +58,215 @@ def main():
     TOTAL_STEPS = 6
 
     # ──────────────────────────────
-    # Step 1: 清理未验证的旧预测记录（保留已验证的历史）
+    # Step 1: 自动验证未验证的旧预测记录（保留所有历史，已开奖的自动标记）
     # ──────────────────────────────
-    step_header(1, TOTAL_STEPS, '🧹', '清理未验证的旧预测记录')
+    step_header(1, TOTAL_STEPS, '🔄', '自动验证未验证的预测记录')
     conn = sqlite3.connect(str(DB_PATH))
-    # 只删除尚未验证的记录（actual_front为空），保留已验证的历史记录
+
+    # 查询所有未验证的记录
     cur = conn.execute(
-        "DELETE FROM prediction_records WHERE actual_front IS NULL OR actual_front = ''"
+        "SELECT id, lottery_type, target_period, front_numbers, back_numbers "
+        "FROM prediction_records "
+        "WHERE actual_front IS NULL OR actual_front = ''"
     )
-    deleted = cur.rowcount
-    # 统计保留的已验证记录
-    cur = conn.execute(
-        "SELECT COUNT(*) FROM prediction_records WHERE actual_front IS NOT NULL AND actual_front != ''"
-    )
-    kept = cur.fetchone()[0]
+    pending = list(cur.fetchall())
+
+    if pending:
+        auto_verified = 0
+        for row in pending:
+            pid, lt, period, front_str, back_str = row
+            # 兼容 front/back_numbers 为 NULL 的历史记录
+            front_pred = [int(x) for x in (front_str or '').split(',') if x.strip().isdigit()]
+            back_pred = [int(x) for x in (back_str or '').split(',') if x.strip().isdigit()]
+
+            actual_found = False
+            actual_front_list = []
+            actual_back_list = []
+
+            if lt == 'kl8':
+                cur = conn.execute(
+                    "SELECT numbers FROM kl8_records WHERE period=?", (period,)
+                )
+                r = cur.fetchone()
+                if r:
+                    actual_nums = [int(x) for x in r[0].split(',') if x.strip().isdigit()]
+                    actual_front_list = list(actual_nums)
+                    actual_back_list = []
+                    actual_found = True
+            else:
+                front_cnt = 5 if lt == 'dlt' else 6
+                back_cnt = 2 if lt == 'dlt' else 1
+                front_cols = ','.join([f'front_{k}' for k in range(1, front_cnt+1)])
+                back_cols = ','.join([f'back_{k}' for k in range(1, back_cnt+1)])
+                cur = conn.execute(
+                    f"SELECT {front_cols},{back_cols} FROM lottery_records "
+                    f"WHERE lottery_type=? AND period=?", (lt, period)
+                )
+                r = cur.fetchone()
+                if r:
+                    # 过滤 NULL 字段，避免后续 sorted/拼接出错
+                    actual_front_list = [n for n in r[:front_cnt] if n is not None]
+                    actual_back_list = [n for n in r[front_cnt:] if n is not None]
+                    actual_found = True
+
+            if actual_found:
+                front_match = set(front_pred) & set(actual_front_list)
+                back_match = set(back_pred) & set(actual_back_list)
+                kl8_combos = None
+                # 计算奖级
+                from prize_calculator import get_prize_level_string, get_prize, _fmt_nums
+                match_level = get_prize_level_string(
+                    lt, len(front_match), len(back_match)
+                )
+                conn.execute(
+                    """UPDATE prediction_records SET
+                       actual_front=?, actual_back=?,
+                       is_matched=?, match_level=?,
+                       front_match_count=?, back_match_count=?
+                       WHERE id=?""",
+                    (','.join(str(n) for n in actual_front_list),
+                     ','.join(str(n) for n in actual_back_list),
+                     1 if front_match or back_match else 0,
+                     match_level,
+                     len(front_match), len(back_match), pid)
+                )
+                auto_verified += 1
+                # 终端显示命中详情 + 奖级
+                front_name_map = {'dlt': '前区', 'ssq': '红球', 'kl8': '号码'}
+                back_name_map = {'dlt': '后区', 'ssq': '蓝球'}
+                f_name = front_name_map.get(lt, '前区')
+                b_name = back_name_map.get(lt, '后区')
+
+                if lt == 'kl8':
+                    hit_str = f"{f_name}{len(front_match)}/20"
+                    # 重建组合用于验证显示
+                    from prize_calculator import generate_kl8_combinations, verify_kl8_combinations, get_kl8_sh10_prize
+                    kl8_combos = generate_kl8_combinations(front_pred)
+                    kl8_verified = verify_kl8_combinations(kl8_combos, actual_front_list)
+                    # 汇总
+                    any_win = any(v['prize'] and v['prize']['is_winning']
+                                  for key in ['single', 'complex_11', 'complex_12']
+                                  for v in kl8_verified[key])
+                    if any_win:
+                        best = max((v['prize'] for key in ['single', 'complex_11', 'complex_12']
+                                    for v in kl8_verified[key]
+                                    if v['prize'] and v['prize']['is_winning']),
+                                   key=lambda x: x['match_count'])
+                        level_str = f"🎉 {best['level']} {best['bonus']}"
+                    else:
+                        level_str = "未中奖"
+                    print(f"   ✅ 期{period}: {hit_str} → {level_str}")
+                    # 打印各组合命中
+                    for key, label in [('single', '单式'), ('complex_11', '11码'), ('complex_12', '12码')]:
+                        for i, v in enumerate(kl8_verified[key]):
+                            tag = f"{'AB'[i]}" if key == 'single' else f"注{i+1}"
+                            print(f"      {label} {tag}: 中{v['hit_count']}/10 {'🎉' if v['prize'] and v['prize']['is_winning'] else ''}")
+                else:
+                    hit_str = f"{f_name}{len(front_match)}/{len(front_pred)}"
+                    if back_pred:
+                        hit_str += f" {b_name}{len(back_match)}/{len(back_pred)}"
+                    prize = get_prize(lt, len(front_match), len(back_match))
+                    level_str = prize['level'] or '未中奖'
+                    print(f"   ✅ 期{period}: {hit_str} → {level_str}")
+
+                # 钉钉推送验证结果（含命中详情 + 中奖详情）
+                if not no_notify:
+                    try:
+                        from notifier import send_verification, send_kl8_verification
+                        if lt == 'kl8':
+                            # kl8_combos 只有在 kl8 且 actual_found 时才会生成
+                            ok = send_kl8_verification(kl8_combos, actual_front_list, period)
+                        else:
+                            ok = send_verification(
+                                lt, front_pred, back_pred,
+                                front_match, back_match,
+                                actual_front_list, actual_back_list
+                            )
+                        if not ok:
+                            print(f"     ⚠️ 期{period}: 钉钉验证推送失败（返回错误码）")
+                        else:
+                            print(f"     ✅ 期{period}: 钉钉验证推送成功")
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        print(f"     ⚠️ 期{period}: 钉钉验证推送异常: {e}")
+
+        conn.commit()
+
+        # 统计
+        cur = conn.execute("SELECT COUNT(*) FROM prediction_records")
+        total = cur.fetchone()[0]
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM prediction_records "
+            "WHERE actual_front IS NOT NULL AND actual_front != ''"
+        )
+        verified = cur.fetchone()[0]
+        unverified = total - verified
+        print(f"  📊 总计 {total} 条 | 已验证 {verified} 条 | 待验证 {unverified} 条")
+    else:
+        cur = conn.execute("SELECT COUNT(*) FROM prediction_records")
+        total = cur.fetchone()[0]
+        print(f"  ✅ 没有待验证的记录（共 {total} 条历史预测）")
+
+    # ──────────────────────────────
+    # 自动推送每个彩种最近一期验证结果（确保每次都能看到）
+    # ──────────────────────────────
+    if not no_notify:
+        print(f"\n  📤 推送各彩种最近一期验证结果...")
+        for lt in ['dlt', 'ssq', 'kl8']:
+            # 查询最近一期已验证记录
+            cur = conn.execute(
+                """SELECT * FROM prediction_records
+                   WHERE lottery_type=? AND actual_front IS NOT NULL AND actual_front != ''
+                   ORDER BY target_period DESC LIMIT 1""",
+                (lt,)
+            )
+            row = cur.fetchone()
+            if row:
+                # 列顺序: id, lottery_type, predict_time, target_period, play_type, front_numbers, back_numbers, ...
+                pid = row[0]
+                lt = row[1]
+                target_period = row[3]
+                front_str = row[5]
+                back_str = row[6]
+                front_pred = [int(x) for x in front_str.split(',') if x.strip().isdigit()]
+                back_pred = [int(x) for x in back_str.split(',') if x.strip().isdigit()]
+                # 重新查询完整数据获取 actual 字段
+                cur2 = conn.execute(
+                    "SELECT actual_front, actual_back FROM prediction_records WHERE id=?", (pid,)
+                )
+                actual_row = cur2.fetchone()
+                actual_front_str = actual_row[0]
+                actual_back_str = actual_row[1]
+                actual_front_list = [int(x) for x in actual_front_str.split(',') if x.strip().isdigit()]
+                actual_back_list = [int(x) for x in actual_back_str.split(',') if x.strip().isdigit()]
+                front_match = set(front_pred) & set(actual_front_list)
+                back_match = set(back_pred) & set(actual_back_list)
+
+                from notifier import send_verification, send_kl8_verification
+                type_names = {'dlt': '大乐透', 'ssq': '双色球', 'kl8': '快乐8'}
+                try:
+                    if lt == 'kl8':
+                        from prize_calculator import generate_kl8_combinations
+                        kl8_combos = generate_kl8_combinations(front_pred)
+                        ok = send_kl8_verification(kl8_combos, actual_front_list, target_period)
+                    else:
+                        ok = send_verification(lt, front_pred, back_pred,
+                                              front_match, back_match,
+                                              actual_front_list, actual_back_list)
+                    print(f"    {'✅' if ok else '❌'} {type_names[lt]} 期{target_period}: {'推送成功' if ok else '推送失败'}")
+                    import time
+                    time.sleep(1)  # 间隔1秒避免限流
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"    ⚠️ {type_names[lt]} 推送异常: {e}")
+            else:
+                type_names = {'dlt': '大乐透', 'ssq': '双色球', 'kl8': '快乐8'}
+                print(f"    ⚠️ {type_names[lt]}: 没有已验证记录")
+
     conn.commit()
     conn.close()
-    print(f"  已清理 {deleted} 条未验证记录，保留 {kept} 条已验证历史 ✅")
 
     # ──────────────────────────────
     # Step 2: 更新大乐透数据
@@ -134,7 +329,7 @@ def main():
                 # 钉钉推送
                 if not no_notify:
                     from notifier import save_prediction, send_prediction as send_pred
-                    latest_period = str(int(df.iloc[-1]['period']) + 1)
+                    latest_period = next_period('dlt', df.iloc[-1]['period'])
                     front_nums = [n for n, s, d in front_preds[:5]]
                     back_nums = [n for n, s, d in back_preds[:2]]
                     save_prediction('dlt', latest_period, front_nums, back_nums)
@@ -164,7 +359,7 @@ def main():
                 })
                 if not no_notify:
                     from notifier import save_prediction, send_prediction as send_pred
-                    latest_period = str(int(df_ssq.iloc[-1]['period']) + 1)
+                    latest_period = next_period('ssq', df_ssq.iloc[-1]['period'])
                     front_nums = [n for n, s, d in front_preds[:6]]
                     back_nums = [n for n, s, d in back_preds[:1]]
                     save_prediction('ssq', latest_period, front_nums, back_nums)
@@ -177,7 +372,7 @@ def main():
 
     # --- 5c: 快乐8 ---
     print(f"\n{'=' * 40}")
-    print(f"  快乐8预测")
+    print(f"  快乐8预测（选十组合）")
     print(f"{'=' * 40}")
     try:
         from kl8_data import ensure_kl8_data
@@ -185,8 +380,8 @@ def main():
         if df_kl8 is not None:
             result = pred_mod.predict_kl8(df_kl8, num_periods=30)
             if result:
-                preds, report = result
-                pred_top20 = [str(n) for n, s, d in preds[:20]]
+                preds, report, kl8_combos = result
+                pred_top20 = [str(n) for n in kl8_combos['top_20']]
                 chart_configs.append({
                     'type': 'kl8',
                     'front': ','.join(pred_top20),
@@ -194,9 +389,9 @@ def main():
                 })
                 if not no_notify:
                     from notifier import save_prediction, send_prediction as send_pred
-                    latest_period = str(int(df_kl8.iloc[-1]['period']) + 1)
-                    save_prediction('kl8', latest_period, [n for n, s, d in preds[:20]])
-                    ok = send_pred('kl8', preds, None, report, '', df_kl8)
+                    latest_period = next_period('kl8', df_kl8.iloc[-1]['period'])
+                    save_prediction('kl8', latest_period, kl8_combos['top_20'])
+                    ok = send_pred('kl8', preds, None, report, '', df_kl8, kl8_combos)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
     except Exception as e:
         import traceback

@@ -26,6 +26,8 @@ class LotteryPredictor:
         self.scaler = StandardScaler()
         self.label_encoders_front = []
         self.label_encoders_back = []
+        # 训练时实际使用的特征列顺序，预测时必须严格对齐，防止特征漂移导致 scaler 错位
+        self.feature_cols = None
         
         self.rf_weight = 0.4
         self.xgb_weight = 0.6
@@ -34,6 +36,8 @@ class LotteryPredictor:
         
         self.dl_predictor = None
         self.use_deep_learning = False
+        # 深度学习预测所需的完整历史数据，预测前需由调用方注入（见 set_full_df）
+        self.full_df = None
         
         # 根据彩票类型设置号码数量
         if lottery_type == 'dlt':
@@ -48,22 +52,29 @@ class LotteryPredictor:
         else:
             raise ValueError(f"不支持的彩票类型: {lottery_type}")
         
-    def prepare_data(self, df):
+    def prepare_data(self, df, fit=True):
         feature_cols = get_all_features()
         available_cols = [col for col in feature_cols if col in df.columns]
-        
+
         if not available_cols:
             print("警告：没有可用的特征列，使用基础特征")
             # 动态生成基础特征列名，基于当前彩票类型
             available_cols = [f'front_{i}' for i in range(1, self.front_count + 1)]
             if self.back_count > 0:
                 available_cols += [f'back_{i}' for i in range(1, self.back_count + 1)]
-        
+
+        # 记录训练时的特征列顺序，供预测/持久化对齐使用
+        if fit:
+            self.feature_cols = available_cols
+
         print(f"使用 {len(available_cols)} 个特征: {', '.join(available_cols[:10])}{'...' if len(available_cols) > 10 else ''}")
-        
+
         X = df[available_cols].fillna(0).values
-        X = self.scaler.fit_transform(X)
-        
+        if fit:
+            X = self.scaler.fit_transform(X)
+        else:
+            X = self.scaler.transform(X)
+
         return X
     
     def train_random_forest(self, df):
@@ -187,13 +198,18 @@ class LotteryPredictor:
         play_type: 'basic' (基础5+2), 'multiple' (多组推荐), 'top_prob' (按概率推荐)
         """
         if isinstance(latest_features, pd.DataFrame):
+            # 严格对齐训练时的特征列顺序，缺失列补0，避免特征漂移导致 scaler 错位
+            if self.feature_cols is not None:
+                latest_features = latest_features.reindex(
+                    columns=self.feature_cols, fill_value=0
+                ).fillna(0)
             latest_features = latest_features.values
-        
+
         if len(latest_features.shape) == 1:
             latest_features = latest_features.reshape(1, -1)
-        
+
         latest_features = self.scaler.transform(latest_features)
-        
+
         front_proba_dict = {}
         back_proba_dict = {}
         
@@ -232,30 +248,33 @@ class LotteryPredictor:
                 back_proba_dict[num].append(prob * self.xgb_weight)
         
         if self.use_deep_learning and self.dl_predictor:
-            try:
-                dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
-                
-                for num, prob in dl_probs['front_lstm'].items():
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob * self.lstm_weight)
-                
-                for num, prob in dl_probs['front_transformer'].items():
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob * self.transformer_weight)
-                
-                for num, prob in dl_probs['back_lstm'].items():
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob * self.lstm_weight)
-                
-                for num, prob in dl_probs['back_transformer'].items():
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob * self.transformer_weight)
-            except Exception as e:
-                print(f"⚠️  深度学习预测失败: {e}")
+            if self.full_df is None:
+                print("⚠️  深度学习已启用但未注入历史数据(full_df)，跳过DL预测")
+            else:
+                try:
+                    dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
+
+                    for num, prob in dl_probs['front_lstm'].items():
+                        if num not in front_proba_dict:
+                            front_proba_dict[num] = []
+                        front_proba_dict[num].append(prob * self.lstm_weight)
+
+                    for num, prob in dl_probs['front_transformer'].items():
+                        if num not in front_proba_dict:
+                            front_proba_dict[num] = []
+                        front_proba_dict[num].append(prob * self.transformer_weight)
+
+                    for num, prob in dl_probs['back_lstm'].items():
+                        if num not in back_proba_dict:
+                            back_proba_dict[num] = []
+                        back_proba_dict[num].append(prob * self.lstm_weight)
+
+                    for num, prob in dl_probs['back_transformer'].items():
+                        if num not in back_proba_dict:
+                            back_proba_dict[num] = []
+                        back_proba_dict[num].append(prob * self.transformer_weight)
+                except Exception as e:
+                    print(f"⚠️  深度学习预测失败: {e}")
         
         for num in front_proba_dict:
             front_proba_dict[num] = np.mean(front_proba_dict[num])
@@ -419,6 +438,8 @@ class LotteryPredictor:
             pickle.dump(self.label_encoders_front, f)
         with open(f'{save_path}/label_encoders_back.pkl', 'wb') as f:
             pickle.dump(self.label_encoders_back, f)
+        with open(f'{save_path}/feature_cols.pkl', 'wb') as f:
+            pickle.dump(self.feature_cols, f)
         
         weights_dict = {
             'rf_weight': self.rf_weight,
@@ -452,6 +473,11 @@ class LotteryPredictor:
             self.label_encoders_front = pickle.load(f)
         with open(f'{load_path}/label_encoders_back.pkl', 'rb') as f:
             self.label_encoders_back = pickle.load(f)
+
+        # 加载训练时的特征列顺序（旧模型可能没有该文件）
+        if os.path.exists(f'{load_path}/feature_cols.pkl'):
+            with open(f'{load_path}/feature_cols.pkl', 'rb') as f:
+                self.feature_cols = pickle.load(f)
         
         if os.path.exists(f'{load_path}/ensemble_weights.pkl'):
             with open(f'{load_path}/ensemble_weights.pkl', 'rb') as f:
@@ -479,19 +505,65 @@ class LotteryPredictor:
             self.use_deep_learning = False
 
 if __name__ == "__main__":
-    from database import Database
+    import sqlite3
+    import pandas as pd
+    from pathlib import Path
     from feature_engineering import FeatureEngineer
-    
-    db = Database()
-    df = db.get_all_records()
-    
-    if not df.empty:
-        fe = FeatureEngineer(df)
+
+    BASE_DIR = Path(__file__).resolve().parent
+    ROOT_DIR = BASE_DIR.parent
+    DB_PATH = ROOT_DIR / 'lottery.db'
+
+    # 先训练大乐透
+    print("=" * 60)
+    print("开始训练大乐透 (dlt) 模型")
+    print("=" * 60)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    df_dlt = pd.read_sql(
+        "SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn
+    )
+    conn.close()
+
+    if not df_dlt.empty:
+        fe = FeatureEngineer(df_dlt, lottery_type='dlt')
         df_features = fe.extract_all_features()
-        
-        predictor = LotteryPredictor()
+        print(f"✅ 特征提取完成，数据维度: {df_features.shape}")
+
+        predictor = LotteryPredictor(lottery_type='dlt')
         predictor.train_random_forest(df_features)
         predictor.train_xgboost(df_features)
-        predictor.save_models()
-        
-        print("模型训练和保存完成")
+        predictor.train_stacking(df_features)
+        predictor.save_models(path='models')
+
+        print("\n✅ 大乐透模型训练和保存完成")
+    else:
+        print("❌ 没有找到大乐透数据")
+
+    # 再训练双色球
+    print("\n" + "=" * 60)
+    print("开始训练双色球 (ssq) 模型")
+    print("=" * 60)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    df_ssq = pd.read_sql(
+        "SELECT * FROM lottery_records WHERE lottery_type='ssq' ORDER BY period", conn
+    )
+    conn.close()
+
+    if not df_ssq.empty:
+        fe = FeatureEngineer(df_ssq, lottery_type='ssq')
+        df_features = fe.extract_all_features()
+        print(f"✅ 特征提取完成，数据维度: {df_features.shape}")
+
+        predictor = LotteryPredictor(lottery_type='ssq')
+        predictor.train_random_forest(df_features)
+        predictor.train_xgboost(df_features)
+        predictor.train_stacking(df_features)
+        predictor.save_models(path='models')
+
+        print("\n✅ 双色球模型训练和保存完成")
+    else:
+        print("❌ 没有找到双色球数据")
+
+    print("\n🎉 所有模型训练完成！")
