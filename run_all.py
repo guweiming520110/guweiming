@@ -42,6 +42,7 @@ def main():
     from datetime import datetime
 
     parser = argparse.ArgumentParser(description='一键全自动运行')
+    
     parser.add_argument('--no-notify', action='store_true', help='不推送钉钉通知')
     parser.add_argument('--skip-charts', action='store_true', help='跳过走势图生成')
     
@@ -55,12 +56,34 @@ def main():
     print(f"  📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'█' * 55}")
 
-    TOTAL_STEPS = 6
+    TOTAL_STEPS = 4
 
     # ──────────────────────────────
-    # Step 1: 自动验证未验证的旧预测记录（保留所有历史，已开奖的自动标记）
+    # Step 1: 先更新三大彩种开奖数据
+    # 关键：必须在验证之前更新，否则本轮新开奖要等下一轮才验证，形成"落后一轮"堆积
     # ──────────────────────────────
-    step_header(1, TOTAL_STEPS, '🔄', '自动验证未验证的预测记录')
+    step_header(1, TOTAL_STEPS, '📥', '更新三大彩种开奖数据')
+    try:
+        import fill_dlt_data
+        fill_dlt_data.fill_missing_data()
+    except Exception as e:
+        print(f"  ⚠️ 大乐透数据更新异常: {e}")
+    try:
+        import fill_ssq_data
+        fill_ssq_data.fill_ssq_data()
+    except Exception as e:
+        print(f"  ⚠️ 双色球数据更新异常: {e}")
+    try:
+        from kl8_data import ensure_kl8_data
+        _df_kl8 = ensure_kl8_data(num_periods=100, force_refresh=True)
+        print(f"  快乐8: {len(_df_kl8) if _df_kl8 is not None else 0} 期 ✅")
+    except Exception as e:
+        print(f"  ⚠️ 快乐8数据更新异常: {e}")
+
+    # ──────────────────────────────
+    # Step 2: 自动验证未验证的旧预测记录（此时数据库已是最新开奖，避免落后一轮）
+    # ──────────────────────────────
+    step_header(2, TOTAL_STEPS, '🔄', '自动验证未验证的预测记录')
     conn = sqlite3.connect(str(DB_PATH))
 
     # 查询所有未验证的记录
@@ -269,40 +292,9 @@ def main():
     conn.close()
 
     # ──────────────────────────────
-    # Step 2: 更新大乐透数据
+    # Step 3: 运行三大彩种预测
     # ──────────────────────────────
-    step_header(2, TOTAL_STEPS, '📥', '更新大乐透数据')
-    try:
-        import fill_dlt_data
-        fill_dlt_data.fill_missing_data()
-    except Exception as e:
-        print(f"  ⚠️ 大乐透数据更新异常: {e}")
-
-    # ──────────────────────────────
-    # Step 3: 更新双色球数据
-    # ──────────────────────────────
-    step_header(3, TOTAL_STEPS, '📥', '更新双色球数据')
-    try:
-        import fill_ssq_data
-        fill_ssq_data.fill_ssq_data()
-    except Exception as e:
-        print(f"  ⚠️ 双色球数据更新异常: {e}")
-
-    # ──────────────────────────────
-    # Step 4: 更新快乐8数据
-    # ──────────────────────────────
-    step_header(4, TOTAL_STEPS, '📥', '更新快乐8数据')
-    try:
-        from kl8_data import ensure_kl8_data
-        df = ensure_kl8_data(num_periods=100, force_refresh=True)
-        print(f"  快乐8: {len(df) if df is not None else 0} 期 ✅")
-    except Exception as e:
-        print(f"  ⚠️ 快乐8数据更新异常: {e}")
-
-    # ──────────────────────────────
-    # Step 5: 运行三大彩种预测
-    # ──────────────────────────────
-    step_header(5, TOTAL_STEPS, '🎯', '运行预测分析')
+    step_header(3, TOTAL_STEPS, '🎯', '运行预测分析')
     from generate_charts import load_data
     import predict as pred_mod
 
@@ -399,12 +391,12 @@ def main():
         traceback.print_exc()
 
     # ──────────────────────────────
-    # Step 6: 生成走势图
+    # Step 4: 生成走势图
     # ──────────────────────────────
     if args.skip_charts:
-        step_header(6, TOTAL_STEPS, '⏭️', '走势图生成已跳过')
+        step_header(4, TOTAL_STEPS, '⏭️', '走势图生成已跳过')
     else:
-        step_header(6, TOTAL_STEPS, '📊', '生成含预测走势图')
+        step_header(4, TOTAL_STEPS, '📊', '生成含预测走势图')
         from charts.composite import generate_composite_chart
 
         for cfg in chart_configs:
