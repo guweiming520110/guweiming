@@ -48,9 +48,13 @@ def _build_url(timestamp: int) -> str:
     return f"{WEBHOOK_URL}&timestamp={timestamp}&sign={urllib.parse.quote(sign)}"
 
 
+# 最近一次发送内容缓存（防重复）
+_last_send_cache = {'time': 0, 'content': ''}
+
+
 def send_dingtalk_message(payload: dict) -> bool:
     """
-    发送消息到钉钉
+    发送消息到钉钉（带 10 秒去重）
 
     参数:
         payload: 钉钉消息体 (dict)
@@ -58,7 +62,19 @@ def send_dingtalk_message(payload: dict) -> bool:
     返回:
         bool 是否发送成功
     """
-    timestamp = int(time.time() * 1000)
+    import time as time_module
+    now = time_module.time()
+    content_str = str(payload)
+
+    # 10 秒内相同内容不发第二次
+    if now - _last_send_cache['time'] < 10 and _last_send_cache['content'] == content_str:
+        print(f"  ⏭️ 钉钉去重: 10秒内相同消息已发送，跳过")
+        return True
+
+    _last_send_cache['time'] = now
+    _last_send_cache['content'] = content_str
+
+    timestamp = int(time_module.time() * 1000)
     url = _build_url(timestamp)
 
     data = json.dumps(payload).encode('utf-8')
@@ -91,7 +107,13 @@ def send_text(content: str, at_mobiles: list = None, is_at_all: bool = False) ->
 
 
 def send_markdown(title: str, text: str, at_mobiles: list = None, is_at_all: bool = False) -> bool:
-    """发送 markdown 类型消息"""
+    """发送 markdown 类型消息
+    钉钉机器人限制：消息内容不能超过 5000 字符，超出会自动截断
+    """
+    # 钉钉限制消息长度 5000 字符，超出截断防止发送失败
+    MAX_LENGTH = 4500  # 留一些余量给标题和包装
+    if len(text) > MAX_LENGTH:
+        text = text[:MAX_LENGTH] + "\n\n... (内容过长已截断)"
     payload = {
         "msgtype": "markdown",
         "markdown": {"title": title, "text": text},
@@ -126,7 +148,8 @@ def _get_period_label(lottery_type: str, df=None) -> str:
 
 
 def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
-                               front_report="", back_report="", df=None) -> str:
+                               front_report="", back_report="", df=None,
+                               kl8_combos=None, target_period=None) -> str:
     """
     格式化预测结果消息
 
@@ -137,6 +160,8 @@ def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
         front_report: 前区报告文本
         back_report: 后区报告文本
         df: 数据 DataFrame (用于提取最新期号)
+        kl8_combos: 快乐8投注组合 (generate_kl8_combinations 返回值)
+        target_period: 本次预测的目标期号（下一期，None 时不显示）
 
     返回:
         markdown 格式消息字符串
@@ -148,21 +173,15 @@ def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
 
     lines = [f"# {emoji} {name} · 预测报告", f"", f"**生成时间**: {now_str}"]
+    # 优先突出"预测目标期号"（下一期），避免误解为在预测已开奖的最新期
+    if target_period:
+        lines.append(f"**🎯 预测目标期号**: {target_period}（下一期）")
     if period != "?":
-        lines.append(f"**参考最新期号**: {period}")
+        lines.append(f"**参考最新开奖期号**: {period}（已开奖）")
     lines.append("")
 
     if lottery_type == 'kl8':
-        # 快乐8：只有前区（20个号码）
-        lines.append(f"### 📋 预测前 20 码")
-        for rank, (num, score, detail) in enumerate(front_preds[:20], 1):
-            # 提取主要图案
-            pattern_str = _summarize_patterns(detail)
-            bar = '⭐' * min(int(score / 5) + 1, 5)
-            lines.append(f"{rank}. **{num}**  `评分:{score:.1f}` {bar}")
-            if pattern_str:
-                lines.append(f"   └ {pattern_str}")
-        lines.append("")
+        _format_kl8_prediction_message(lines, front_preds, kl8_combos)
     else:
         # dlt/ssq：前区 + 后区
         front_cnt = 5 if lottery_type == 'dlt' else 6
@@ -198,7 +217,18 @@ def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
 
     # 汇总
     if lottery_type == 'kl8':
-        nums_str = ", ".join(str(n) for n, s, d in front_preds[:20])
+        if kl8_combos:
+            from prize_calculator import _fmt_nums
+            nums_str = (
+                f"单式A: `{_fmt_nums(kl8_combos['single'][0])}`\n\n"
+                f"单式B: `{_fmt_nums(kl8_combos['single'][1])}`\n\n"
+                f"复式11码①: `{_fmt_nums(kl8_combos['complex_11'][0])}`\n\n"
+                f"复式11码②: `{_fmt_nums(kl8_combos['complex_11'][1])}`\n\n"
+                f"复式12码①: `{_fmt_nums(kl8_combos['complex_12'][0])}`\n\n"
+                f"复式12码②: `{_fmt_nums(kl8_combos['complex_12'][1])}`"
+            )
+        else:
+            nums_str = ", ".join(str(n) for n, s, d in front_preds[:20])
     else:
         front_nums = [str(n) for n, s, d in front_preds[:front_cnt]]
         back_nums = [str(n) for n, s, d in (back_preds or [])[:back_cnt]]
@@ -212,11 +242,11 @@ def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
     return "\n".join(lines)
 
 
-def format_verification_message(lottery_type: str, predicted_front, predicted_back,
-                                 verified_front, verified_back,
-                                 actual_front, actual_back) -> str:
+def format_verification_message(lottery_type: str, predicted_front: list, predicted_back: Optional[list],
+                                 verified_front: set, verified_back: Optional[set],
+                                 actual_front: list, actual_back: Optional[list]) -> str:
     """
-    格式化验证结果消息
+    格式化验证结果消息（含命中详情和中奖详情）
 
     参数:
         lottery_type: 彩种
@@ -227,47 +257,76 @@ def format_verification_message(lottery_type: str, predicted_front, predicted_ba
         actual_front: 实际前区开奖号码
         actual_back: 实际后区开奖号码
     """
+    from prize_calculator import (format_hit_detail, format_prize_detail,
+                                   get_prize, _fmt_nums)
+
     name = LOTTERY_NAMES.get(lottery_type, lottery_type)
     emoji = LOTTERY_EMOJIS.get(lottery_type, '📊')
-    front_name = '前区' if lottery_type == 'dlt' else '红球'
-    back_name = '后区' if lottery_type == 'dlt' else '蓝球'
-    front_cnt = 5 if lottery_type == 'dlt' else 6
 
-    front_hit = len(verified_front)
-    back_hit = len(verified_back or [])
-    front_rate = front_hit / front_cnt * 100
-    total_hit = front_hit + back_hit
-    total_cnt = front_cnt + (2 if lottery_type == 'dlt' else 1)
-    total_rate = total_hit / total_cnt * 100
+    if lottery_type == 'kl8':
+        front_name = '号码'
+        front_cnt = 20
+        front_hit = len(verified_front)
+        back_hit = 0
+        total_hit = front_hit
+        total_cnt = 20
+        total_rate = front_hit / front_cnt * 100
+    else:
+        front_name = '前区' if lottery_type == 'dlt' else '红球'
+        back_name = '后区' if lottery_type == 'dlt' else '蓝球'
+        front_cnt = 5 if lottery_type == 'dlt' else 6
+        back_cnt = 2 if lottery_type == 'dlt' else 1
+        front_hit = len(verified_front)
+        verified_back = verified_back or set()
+        back_hit = len(verified_back)
+        total_hit = front_hit + back_hit
+        total_cnt = front_cnt + (2 if lottery_type == 'dlt' else 1)
+        total_rate = total_hit / total_cnt * 100
+        if actual_back is None:
+            actual_back = []
+        if predicted_back is None:
+            predicted_back = []
 
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
 
     lines = [f"# {emoji} {name} · 验证结果", "", f"**验证时间**: {now_str}", ""]
 
-    # 预测 vs 实际
+    # ── 预测 vs 开奖对照表 ──
     lines.append(f"### 📋 预测 vs 开奖")
     lines.append(f"| | 预测号码 | 实际开奖 | 命中 |")
     lines.append(f"|:--|:--|:--|:--:|")
-    pred_f_str = ", ".join(str(n) for n in predicted_front)
-    act_f_str = ", ".join(str(n) for n in actual_front)
+    pred_f_str = _fmt_nums(predicted_front)
+    act_f_str = _fmt_nums(actual_front)
     hit_f_str = "✅" if front_hit > 0 else "❌"
     lines.append(f"| **{front_name}** | {pred_f_str} | {act_f_str} | {hit_f_str} `{front_hit}/{front_cnt}` |")
 
-    if predicted_back is not None and actual_back is not None:
-        pred_b_str = ", ".join(str(n) for n in predicted_back)
-        act_b_str = ", ".join(str(n) for n in actual_back)
+    if lottery_type != 'kl8' and predicted_back and actual_back:
+        pred_b_str = _fmt_nums(predicted_back)
+        act_b_str = _fmt_nums(actual_back)
         hit_b_str = "✅" if back_hit > 0 else "❌"
         lines.append(f"| **{back_name}** | {pred_b_str} | {act_b_str} | {hit_b_str} `{back_hit}/{len(actual_back)}` |")
 
     lines.append("")
 
-    # 命中详情
-    if verified_front:
-        lines.append(f"✅ **命中{front_name}**: `{sorted(verified_front)}`")
-    if verified_back:
-        lines.append(f"✅ **命中{back_name}**: `{sorted(verified_back)}`")
-    if not verified_front and not verified_back:
-        lines.append(f"❌ 本期**未命中**任何号码")
+    # ── 命中详情（命中/未命中逐一列出）──
+    lines.append(f"### 🎯 命中详情")
+    lines.append(format_hit_detail(
+        lottery_type, predicted_front, predicted_back or [],
+        actual_front, actual_back or []
+    ))
+    lines.append("")
+
+    # ── 中奖详情（奖级、奖金）──
+    lines.append(f"### 🏆 中奖详情")
+    prize_result = get_prize(lottery_type, front_hit, back_hit)
+    lines.append(format_prize_detail(lottery_type, front_hit, back_hit))
+
+    if prize_result.get('is_winning'):
+        lines.append(f"")
+        lines.append(f"> 🎉 **恭喜中奖！{prize_result.get('level', '')}**")
+    elif lottery_type == 'kl8' and front_hit >= 10:
+        lines.append(f"")
+        lines.append(f"> 🎉 **命中率 {prize_result.get('match_rate', 0)}%，表现不错！**")
 
     lines.append("")
     lines.append(f"> **综合命中率**: {total_hit}/{total_cnt} = **{total_rate:.1f}%**")
@@ -320,15 +379,60 @@ def format_stats_message(stats: dict) -> str:
 # ==================== 工具函数 ====================
 
 
-def _summarize_patterns(detail: dict) -> str:
+def _format_kl8_prediction_message(lines: list, front_preds, kl8_combos):
+    """格式化快乐8预测消息（选十投注组合格式）"""
+    from prize_calculator import _fmt_nums
+
+    if kl8_combos is None:
+        # 兼容旧格式：只显示 Top-20
+        lines.append(f"### 📋 预测前 20 码")
+        for rank, (num, score, detail) in enumerate(front_preds[:20], 1):
+            pattern_str = _summarize_patterns(detail)
+            bar = '⭐' * min(int(score / 5) + 1, 5)
+            lines.append(f"{rank}. **{num}**  `评分:{score:.1f}` {bar}")
+            if pattern_str:
+                lines.append(f"   └ {pattern_str}")
+        lines.append("")
+        return
+
+    # ── 单式选十 ──
+    lines.append(f"### 🎯 单式选十（2组）")
+    labels = ['A', 'B']
+    for i, combo in enumerate(kl8_combos['single']):
+        lines.append(f"- **{labels[i]}组**: `{_fmt_nums(combo)}`  `[{len(combo)}码]`")
+    lines.append("")
+
+    # ── 复式11码 10+1 ──
+    lines.append(f"### 📐 复式11码 10+1（2注）")
+    for i, combo in enumerate(kl8_combos['complex_11']):
+        lines.append(f"- **注{i+1}**: `{_fmt_nums(combo)}`  `[{len(combo)}码]`")
+    lines.append("")
+
+    # ── 复式12码 10+2 ──
+    lines.append(f"### 📐 复式12码 10+2（2注）")
+    for i, combo in enumerate(kl8_combos['complex_12']):
+        lines.append(f"- **注{i+1}**: `{_fmt_nums(combo)}`  `[{len(combo)}码]`")
+    lines.append("")
+
+    # ── 参考 Top-20 ──
+    top_20 = kl8_combos.get('top_20', [])
+    lines.append(f"### 📋 参考 Top-20 码")
+    lines.append(f"> `{_fmt_nums(top_20)}`")
+    lines.append("")
+
+
+def _summarize_patterns(detail):
     """从预测详情中提取主要图案摘要"""
     if not detail:
         return ""
-    sorted_pats = sorted(detail.items(), key=lambda x: x[1].get('weighted', 0), reverse=True)[:3]
+    # 过滤出值是 dict 的条目（遗漏字符串跳过）
+    items = [(k, v) for k, v in detail.items() if isinstance(v, dict)]
+    sorted_pats = sorted(items, key=lambda x: x[1].get('weighted', 0), reverse=True)[:3]
     parts = []
     for label, info in sorted_pats:
         w = info.get('weighted', 0)
-        parts.append(f"{label}({w:.1f})")
+        if w > 0:
+            parts.append(f"{label}({w:.1f})")
     return ", ".join(parts)
 
 
@@ -396,10 +500,10 @@ def _ensure_table(conn=None):
 def save_prediction(lottery_type: str, target_period: str,
                     front_numbers: list, back_numbers: list = None) -> int:
     """
-    保存预测记录到数据库
+    保存预测记录到数据库（同彩种+同期号已存在时更新，否则插入）
 
     返回:
-        新记录的 id
+        新记录或已有记录的 id
     """
     _ensure_table()
     conn = _get_conn()
@@ -407,15 +511,36 @@ def save_prediction(lottery_type: str, target_period: str,
     front_str = ','.join(str(n) for n in front_numbers)
     back_str = ','.join(str(n) for n in (back_numbers or []))
 
-    conn.execute(
-        """INSERT INTO prediction_records 
-           (lottery_type, predict_time, target_period, play_type,
-            front_numbers, back_numbers)
-           VALUES (?, ?, ?, '几何图案预测', ?, ?)""",
-        (lottery_type, now_str, target_period, front_str, back_str)
+    # 先查找是否已存在同一彩种+同期号的记录
+    cur = conn.execute(
+        """SELECT id FROM prediction_records 
+           WHERE lottery_type=? AND target_period=?
+           ORDER BY id DESC LIMIT 1""",
+        (lottery_type, target_period)
     )
+    existing = cur.fetchone()
+
+    if existing:
+        # 更新已有记录（保留验证信息）
+        conn.execute(
+            """UPDATE prediction_records SET
+               predict_time=?, front_numbers=?, back_numbers=?, play_type='几何图案预测'
+               WHERE id=?""",
+            (now_str, front_str, back_str, existing[0])
+        )
+        record_id = existing[0]
+    else:
+        # 插入新记录
+        conn.execute(
+            """INSERT INTO prediction_records 
+               (lottery_type, predict_time, target_period, play_type,
+                front_numbers, back_numbers)
+               VALUES (?, ?, ?, '几何图案预测', ?, ?)""",
+            (lottery_type, now_str, target_period, front_str, back_str)
+        )
+        record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
     conn.commit()
-    record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
     return record_id
 
@@ -425,10 +550,12 @@ def save_verification(lottery_type: str, target_period: str,
                       actual_front: list, actual_back: list,
                       front_match: set, back_match: set) -> bool:
     """
-    更新验证结果到对应的预测记录
+    更新验证结果到对应的预测记录（含奖级信息）
 
     搜索同一彩种+期号+预测号码匹配的记录
     """
+    from prize_calculator import get_prize_level_string
+
     _ensure_table()
     conn = _get_conn()
 
@@ -436,10 +563,15 @@ def save_verification(lottery_type: str, target_period: str,
     actual_f_str = ','.join(str(n) for n in actual_front)
     actual_b_str = ','.join(str(n) for n in actual_back)
 
+    # 计算奖级
+    match_level = get_prize_level_string(
+        lottery_type, len(front_match), len(back_match)
+    )
+
     # 查找匹配的预测记录
     cur = conn.execute(
-        """SELECT id FROM prediction_records 
-           WHERE lottery_type=? AND target_period=? 
+        """SELECT id FROM prediction_records
+           WHERE lottery_type=? AND target_period=?
            AND front_numbers=?
            ORDER BY id DESC LIMIT 1""",
         (lottery_type, target_period, front_numbers)
@@ -451,10 +583,12 @@ def save_verification(lottery_type: str, target_period: str,
             """UPDATE prediction_records SET
                actual_front=?, actual_back=?,
                is_matched=?,
+               match_level=?,
                front_match_count=?, back_match_count=?
                WHERE id=?""",
             (actual_f_str, actual_b_str,
              1 if front_match or back_match else 0,
+             match_level,
              len(front_match), len(back_match),
              row['id'])
         )
@@ -554,7 +688,8 @@ def get_accuracy_stats() -> dict:
 
 
 def send_prediction(lottery_type: str, front_preds, back_preds=None,
-                    front_report="", back_report="", df=None) -> bool:
+                    front_report="", back_report="", df=None,
+                    kl8_combos=None, target_period=None) -> bool:
     """
     发送预测结果到钉钉
 
@@ -563,7 +698,7 @@ def send_prediction(lottery_type: str, front_preds, back_preds=None,
     """
     message = format_prediction_message(
         lottery_type, front_preds, back_preds,
-        front_report, back_report, df
+        front_report, back_report, df, kl8_combos, target_period
     )
     name = LOTTERY_NAMES.get(lottery_type, lottery_type)
     title = f"{name} · 预测结果"
@@ -584,6 +719,110 @@ def send_verification(lottery_type: str, predicted_front, predicted_back,
     name = LOTTERY_NAMES.get(lottery_type, lottery_type)
     title = f"{name} · 验证结果"
     return send_markdown(title, message)
+
+
+def format_kl8_verification_message(kl8_combos: dict, actual_nums: list,
+                                     target_period: str = "") -> str:
+    """
+    格式化快乐8选十投注组合验证结果消息（精简版）
+
+    参数:
+        kl8_combos: generate_kl8_combinations() 返回值
+        actual_nums: 实际开奖号码列表
+        target_period: 目标期号
+    """
+    from prize_calculator import (_fmt_nums, verify_kl8_combinations,
+                                   get_kl8_sh10_prize)
+
+    verified = verify_kl8_combinations(kl8_combos, actual_nums)
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    lines = [f"# 🎲 快乐8 · 验证结果", "", f"**验证时间**: {now_str}"]
+    if target_period:
+        lines.append(f"**目标期号**: {target_period}")
+    lines.append("")
+
+    # ── Top-20 整体命中（放在最前面，最重要）──
+    top_20 = kl8_combos.get('top_20', [])
+    top_20_hit = verified['top_20_hit']
+    hit_count = verified['top_20_hit_count']
+    hit_rate = hit_count / 20 * 100 if top_20 else 0
+
+    lines.append(f"### 📊 Top-20 整体命中")
+    lines.append(f"- **预测**: `{_fmt_nums(sorted(top_20))}`")
+    lines.append(f"- **开奖**: `{_fmt_nums(sorted(actual_nums))}`")
+    lines.append(f"- **命中**: `{_fmt_nums(sorted(top_20_hit))}` ({hit_count}/20 = {hit_rate:.1f}%)")
+    if top_20 and hit_count < 20:
+        miss = sorted(set(top_20) - set(actual_nums))
+        lines.append(f"- 未命中: `{_fmt_nums(miss)}`")
+    lines.append("")
+
+    # ── 各组合中奖汇总（精简表格）──
+    lines.append(f"### 📋 组合验证结果")
+    lines.append(f"| 类型 | 组号 | 命中 | 结果 |")
+    lines.append(f"|:--|:--:|:--:|:--|")
+
+    labels = ['A', 'B']
+    for i, v in enumerate(verified['single']):
+        result = v['prize']
+        if result and result['is_winning']:
+            res_str = f"🎉 {result['level']} {result['bonus']}"
+        elif result:
+            res_str = result['match_desc']
+        else:
+            res_str = "-"
+        lines.append(f"| 单式 | {labels[i]} | {v['hit_count']}/10 | {res_str} |")
+
+    for i, v in enumerate(verified['complex_11']):
+        result = v['prize']
+        if result and result['is_winning']:
+            res_str = f"🎉 {result['level']} {result['bonus']}"
+        elif result:
+            res_str = result['match_desc']
+        else:
+            res_str = "-"
+        lines.append(f"| 11码 | {i+1} | {v['hit_count']}/10 | {res_str} |")
+
+    for i, v in enumerate(verified['complex_12']):
+        result = v['prize']
+        if result and result['is_winning']:
+            res_str = f"🎉 {result['level']} {result['bonus']}"
+        elif result:
+            res_str = result['match_desc']
+        else:
+            res_str = "-"
+        lines.append(f"| 12码 | {i+1} | {v['hit_count']}/10 | {res_str} |")
+    lines.append("")
+
+    # ── 汇总 ──
+    any_winning = False
+    best_prize = None
+    for key in ['single', 'complex_11', 'complex_12']:
+        for v in verified[key]:
+            if v['prize'] and v['prize']['is_winning']:
+                any_winning = True
+                if best_prize is None or v['prize']['match_count'] > best_prize['match_count']:
+                    best_prize = v['prize']
+
+    if any_winning and best_prize:
+        lines.append(f"> 🎉 **恭喜中奖！最高奖级: {best_prize['level']} {best_prize['bonus']}**")
+    else:
+        lines.append(f"> 📊 本次未中奖，继续加油！")
+
+    lines.append("")
+    lines.append("---")
+    lines.append(f"*🤖 由数字彩票AI分析系统自动验证*")
+
+    return "\n".join(lines)
+
+
+def send_kl8_verification(kl8_combos: dict, actual_nums: list,
+                           target_period: str = "") -> bool:
+    """
+    发送快乐8组合验证结果到钉钉
+    """
+    message = format_kl8_verification_message(kl8_combos, actual_nums, target_period)
+    return send_markdown("快乐8 · 验证结果", message)
 
 
 def send_stats_report() -> bool:
@@ -617,6 +856,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='钉钉通知模块')
     parser.add_argument('--test', action='store_true', help='测试钉钉连接')
     parser.add_argument('--report', action='store_true', help='发送统计报告')
+    parser.add_argument('--repush-verify', action='store_true', help='重推所有已验证结果到钉钉')
+    parser.add_argument('--lottery-type', default=None, help='只重推指定彩种 (dlt/ssq/kl8)')
     args = parser.parse_args()
 
     if args.test:
@@ -628,3 +869,59 @@ if __name__ == '__main__':
         print("发送统计报告...")
         ok = send_stats_report()
         print(f"{'✅ 发送成功' if ok else '❌ 发送失败'}")
+
+    if args.repush_verify:
+        print("开始重推所有验证结果...")
+        conn = _get_conn()
+        cur = conn.execute(
+            """SELECT * FROM prediction_records
+               WHERE actual_front IS NOT NULL AND actual_front != ''
+               ORDER BY target_period DESC"""
+        )
+        if args.lottery_type:
+            # 只重推指定彩种
+            cur = conn.execute(
+                """SELECT * FROM prediction_records
+                   WHERE actual_front IS NOT NULL AND actual_front != ''
+                   AND lottery_type = ?
+                   ORDER BY target_period DESC""",
+                (args.lottery_type,)
+            )
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        print(f"找到 {len(rows)} 条已验证记录")
+        success = 0
+        failed = 0
+        for r in rows:
+            lt = r['lottery_type']
+            target_period = r['target_period']
+            front_pred = [int(x) for x in r['front_numbers'].split(',') if x.strip().isdigit()]
+            back_pred = [int(x) for x in r['back_numbers'].split(',') if x.strip().isdigit()] if r['back_numbers'] else []
+            actual_front = [int(x) for x in r['actual_front'].split(',') if x.strip().isdigit()]
+            actual_back = [int(x) for x in r['actual_back'].split(',') if x.strip().isdigit()] if r['actual_back'] else []
+
+            # 计算命中
+            front_match = set(front_pred) & set(actual_front)
+            back_match = set(back_pred) & set(actual_back)
+
+            print(f"  推送 {lt} 期{target_period}... ", end='', flush=True)
+            try:
+                if lt == 'kl8':
+                    from prize_calculator import generate_kl8_combinations
+                    kl8_combos = generate_kl8_combinations(front_pred)
+                    ok = send_kl8_verification(kl8_combos, actual_front, target_period)
+                else:
+                    ok = send_verification(lt, front_pred, back_pred, front_match, back_match, actual_front, actual_back)
+                if ok:
+                    print("✅ 成功")
+                    success += 1
+                else:
+                    print("❌ 失败")
+                    failed += 1
+                # 间隔1秒避免钉钉限流
+                import time
+                time.sleep(1)
+            except Exception as e:
+                print(f"⚠️ 异常: {e}")
+                failed += 1
+        print(f"\n重推完成: 成功 {success} 条, 失败 {failed} 条")

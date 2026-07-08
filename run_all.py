@@ -325,7 +325,7 @@ def main():
                     front_nums = [n for n, s, d in front_preds[:5]]
                     back_nums = [n for n, s, d in back_preds[:2]]
                     save_prediction('dlt', latest_period, front_nums, back_nums)
-                    ok = send_pred('dlt', front_preds, back_preds, front_report, back_report, df)
+                    ok = send_pred('dlt', front_preds, back_preds, front_report, back_report, df, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
     except Exception as e:
         import traceback
@@ -355,7 +355,7 @@ def main():
                     front_nums = [n for n, s, d in front_preds[:6]]
                     back_nums = [n for n, s, d in back_preds[:1]]
                     save_prediction('ssq', latest_period, front_nums, back_nums)
-                    ok = send_pred('ssq', front_preds, back_preds, front_report, back_report, df_ssq)
+                    ok = send_pred('ssq', front_preds, back_preds, front_report, back_report, df_ssq, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
     except Exception as e:
         import traceback
@@ -383,7 +383,7 @@ def main():
                     from notifier import save_prediction, send_prediction as send_pred
                     latest_period = next_period('kl8', df_kl8.iloc[-1]['period'])
                     save_prediction('kl8', latest_period, kl8_combos['top_20'])
-                    ok = send_pred('kl8', preds, None, report, '', df_kl8, kl8_combos)
+                    ok = send_pred('kl8', preds, None, report, '', df_kl8, kl8_combos, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
     except Exception as e:
         import traceback
