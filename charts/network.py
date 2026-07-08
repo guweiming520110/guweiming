@@ -369,13 +369,13 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                         bg = (0.12, 0.12, 0.12)  # 黑色 - 待验证
                         ec = (0.6, 0.6, 0.6)     # 灰色边框
 
-                    # 预测球稍小，画在开奖球上层
+                    # 预测球画在开奖球相同位置（无偏移），在上层显示，大小一致
                     draw_number_ball(ax, num, abs_idx, num, bg,
-                                     edgecolor=ec, radius=0.25, fontsize=6, zorder=7)
+                                     edgecolor=ec, radius=0.38, fontsize=8, zorder=7)
                     # 命中加★标记
                     if is_hit:
                         ax.text(num, abs_idx, '★', ha='center', va='center',
-                               fontsize=5, color='white', fontweight='bold', zorder=8)
+                               fontsize=7, color='white', fontweight='bold', zorder=8)
 
             # 后区预测号码
             if has_back and pred_back:
@@ -394,11 +394,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                         bg = (0.12, 0.12, 0.12)
                         ec = (0.6, 0.6, 0.6)
 
-                    draw_number_ball(ax, num + back_shift_local, abs_idx, num, bg,
-                                     edgecolor=ec, radius=0.25, fontsize=6, zorder=7)
+                    # 预测球画在开奖球下方（向下偏移0.32）
+                    draw_number_ball(ax, num + back_shift_local, abs_idx + 0.32, num, bg,
+                                     edgecolor=ec, radius=0.30, fontsize=7, zorder=7)
                     if is_hit:
-                        ax.text(num + back_shift_local, abs_idx, '★', ha='center', va='center',
-                               fontsize=5, color='white', fontweight='bold', zorder=8)
+                        ax.text(num + back_shift_local, abs_idx + 0.32, '★', ha='center', va='center',
+                               fontsize=7, color='white', fontweight='bold', zorder=8)
 
     # ---- 预测理由彩色连线 + 未来期预测号码标记 ----
     if has_pred:
@@ -440,12 +441,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                 if not (front_min <= num <= front_max):
                     continue
                 is_verified = verified_front and num in verified_front
-                has_verification = (verified_front is not None and len(verified_front) >= 0)
+                has_verification = verified_front is not None
 
                 if is_verified:
                     bg = (0.9, 0.75, 0.1)
                     ec = (1.0, 0.85, 0.2)
-                elif has_verification and verified_front is not None:
+                elif has_verification:
                     bg = (0.85, 0.1, 0.1)
                     ec = (1.0, 0.2, 0.2)
                 else:
@@ -468,12 +469,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                     continue
                 disp = num + back_shift_local
                 is_verified = verified_back and num in verified_back
-                has_verification = (verified_front is not None and len(verified_front) >= 0)
+                has_verification = verified_back is not None
 
                 if is_verified:
                     bg = (0.9, 0.75, 0.1)
                     ec = (1.0, 0.85, 0.2)
-                elif has_verification and verified_back is not None:
+                elif has_verification:
                     bg = (0.85, 0.1, 0.1)
                     ec = (1.0, 0.2, 0.2)
                 else:

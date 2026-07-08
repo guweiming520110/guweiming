@@ -61,8 +61,9 @@ def generate_composite_chart(df, lottery_type='dlt',
     # 预测数据
     pf = predicted_front if predicted_front else []
     pb = predicted_back if predicted_back else []
-    vf = verified_front if verified_front else []
-    vb = verified_back if verified_back else []
+    # 保留 None 语义：None=未验证, []或非空列表=已验证
+    vf = verified_front  # 保持原样传递 (None/set/list)
+    vb = verified_back   # 保持原样传递 (None/set/list)
 
     # 判断是否 kl8（独有布局：3张子图高度比不同）
     is_kl8 = (lottery_type == 'kl8')
