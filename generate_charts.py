@@ -175,16 +175,29 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         # 验证模式：检查预测命中，并保存验证结果到数据库
         verified_front_set = None  # None=未验证, set()=已验证无命中, {1,2}=已验证有命中
         if verify and predict_front and len(df) > 0:
-            latest = df.iloc[-1]
-            actual_front = latest['num_list']
-            verified_front_set = set(predict_front) & set(actual_front)
-            if verified_front_set:
-                print(f"  ✅ 预测正确号码: {sorted(verified_front_set)} ({len(verified_front_set)}/{len(predict_front)})")
+            # ⚠️ 关键修复：必须用"目标期号"对应的开奖号码验证，
+            # 绝不能盲取 df.iloc[-1]（数据库最新一期）——否则会出现
+            # "用上一期/相邻期开奖号验证本期预测"的期号错位 bug。
+            actual_row = None
+            if target_period is not None:
+                matched = df[df['period'].astype(str) == str(target_period)]
+                if len(matched) > 0:
+                    actual_row = matched.iloc[-1]
+
+            if actual_row is None:
+                # 目标期尚未开奖（数据落后）或库中无该期数据 → 跳过验证，不盲配
+                print(f"  ⏳ 目标期 {target_period} 尚未开奖或数据库无该期开奖数据，跳过验证（不做盲配）")
+                verified_front_set = None
             else:
-                print(f"  本期预测未命中")
+                actual_front = actual_row['num_list']
+                verified_front_set = set(predict_front) & set(actual_front)
+                if verified_front_set:
+                    print(f"  ✅ 预测正确号码: {sorted(verified_front_set)} ({len(verified_front_set)}/{len(predict_front)})")
+                else:
+                    print(f"  本期预测未命中")
 
             # 保存验证结果到数据库，使历史期号行也能显示黄色标记
-            if target_period:
+            if target_period and actual_row is not None:
                 try:
                     from notifier import save_verification, send_verification
                     front_str = ','.join(str(n) for n in predict_front)
@@ -239,11 +252,12 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
             return
 
         # 验证模式：若未指定预测号码，从数据库自动加载上次预测
+        target_period = None  # 预测对应的目标期号（用于期号精确校验）
         if verify and not predict_front:
             try:
                 conn_v = sqlite3.connect(str(DB_PATH))
                 cur_v = conn_v.execute(
-                    """SELECT front_numbers, back_numbers FROM prediction_records
+                    """SELECT target_period, front_numbers, back_numbers FROM prediction_records
                        WHERE lottery_type=? AND (actual_front IS NULL OR actual_front = '')
                        ORDER BY id DESC LIMIT 1""",
                     (lottery_type,)
@@ -251,15 +265,16 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                 row = cur_v.fetchone()
                 conn_v.close()
                 if row:
-                    predict_front = [int(x) for x in row[0].split(',') if x.strip().isdigit()]
-                    if row[1]:
-                        predict_back = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
-                    print(f"  📋 从数据库加载预测: 前区{predict_front} 后区{predict_back}")
+                    target_period = row[0]
+                    predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
+                    if row[2]:
+                        predict_back = [int(x) for x in row[2].split(',') if x.strip().isdigit()]
+                    print(f"  📋 从数据库加载预测(期{target_period}): 前区{predict_front} 后区{predict_back}")
                 else:
                     # 尝试加载已验证的最近记录（重新生成验证走势图）
                     conn_v = sqlite3.connect(str(DB_PATH))
                     cur_v = conn_v.execute(
-                        """SELECT front_numbers, back_numbers FROM prediction_records
+                        """SELECT target_period, front_numbers, back_numbers FROM prediction_records
                            WHERE lottery_type=? AND actual_front != ''
                            ORDER BY id DESC LIMIT 1""",
                         (lottery_type,)
@@ -267,10 +282,11 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                     row = cur_v.fetchone()
                     conn_v.close()
                     if row:
-                        predict_front = [int(x) for x in row[0].split(',') if x.strip().isdigit()]
-                        if row[1]:
-                            predict_back = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
-                        print(f"  📋 从数据库加载已验证预测: 前区{predict_front} 后区{predict_back}")
+                        target_period = row[0]
+                        predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
+                        if row[2]:
+                            predict_back = [int(x) for x in row[2].split(',') if x.strip().isdigit()]
+                        print(f"  📋 从数据库加载已验证预测(期{target_period}): 前区{predict_front} 后区{predict_back}")
             except Exception as e:
                 print(f"  ⚠️ 加载预测记录失败: {e}")
 
@@ -279,8 +295,16 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         if verify and predict_front:
             front_cnt = cfg['front_count']
             back_cnt = cfg['back_count']
-            latest = df.iloc[-1]
-            if lottery_type == 'kl8':
+            # ⚠️ 关键修复：用"目标期号"对应的开奖行验证，禁止盲取 df.iloc[-1]
+            latest = None
+            if target_period is not None:
+                matched = df[df['period'].astype(str) == str(target_period)]
+                if len(matched) > 0:
+                    latest = matched.iloc[-1]
+
+            if latest is None:
+                print(f"  ⏳ 目标期 {target_period} 尚未开奖或数据库无该期开奖数据，跳过验证（不做盲配）")
+            elif lottery_type == 'kl8':
                 # 快乐8验证逻辑
                 actual_front = latest['num_list']
                 verified_front_set = set(predict_front) & set(actual_front)
@@ -341,16 +365,17 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         )
 
         # 验证模式钉钉推送
-        if verify and predict_front and lottery_type != 'kl8':
+        # 仅当确实完成了验证（verified_front_set 不为 None，说明目标期已开奖并成功匹配）才推送/保存
+        if (verify and predict_front and lottery_type != 'kl8'
+                and verified_front_set is not None):
             try:
                 from notifier import save_verification, send_verification
 
-                # 保存验证结果到数据库
+                # 保存验证结果到数据库（使用目标期号，禁止 df.iloc[-1] 盲配）
                 front_str = ','.join(str(n) for n in predict_front)
                 back_str = ','.join(str(n) for n in (predict_back or []))
-                latest_period = str(df.iloc[-1]['period'])
                 save_verification(
-                    lottery_type, latest_period,
+                    lottery_type, str(target_period),
                     front_str, back_str,
                     actual_front, actual_back,
                     verified_front_set, verified_back_set

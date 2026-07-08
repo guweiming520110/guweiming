@@ -348,6 +348,17 @@ if __name__ == '__main__':
             my_pending = [p for p in pending if p['lottery_type'] == lottery_type]
 
             if my_pending:
+                # 关键修复：验证前先强制刷新当期开奖数据。
+                # 否则会出现"预测目标期已开奖、但数据库还是旧数据"导致验证一直堆积、
+                # 永远慢一期的问题（进而诱发下游 generate_charts 用相邻期开奖盲配）。
+                if lottery_type == 'kl8':
+                    try:
+                        from kl8_data import ensure_kl8_data
+                        ensure_kl8_data(args.periods, force_refresh=True)
+                        print("  🔄 已强制刷新快乐8开奖数据，确保验证使用最新开奖")
+                    except Exception as e:
+                        print(f"  ⚠️ 刷新快乐8开奖数据失败（将用现有数据验证）: {e}")
+
                 # 尝试自动验证
                 db = Path(__file__).resolve().parent.parent / 'lottery.db'
                 conn = sqlite3.connect(str(db))
