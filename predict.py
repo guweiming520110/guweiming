@@ -560,12 +560,14 @@ if __name__ == '__main__':
                 if lottery_type == 'kl8':
                     ok = send_prediction(
                         lottery_type, front_preds, None,
-                        front_report, '', df, kl8_combos
+                        front_report, '', df, kl8_combos,
+                        target_period=latest_period
                     )
                 else:
                     ok = send_prediction(
                         lottery_type, front_preds, back_preds,
-                        front_report, back_report, df
+                        front_report, back_report, df,
+                        target_period=latest_period
                     )
                 print(f"\n{'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
             else:
