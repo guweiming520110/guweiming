@@ -24,6 +24,7 @@ LOTTERY_TYPES = {
         'default_periods': 30,
         'default_train': 80,
         'color_ball': (0.1, 0.55, 0.1),  # 历史号码统一绿色
+        'yearly_max': 156,  # 大乐透每周开3次(周一/三/六)，全年约155-156期，取156作跨年滚动阈值
     },
     'kl8': {
         'name': '快乐8',
@@ -62,6 +63,7 @@ LOTTERY_TYPES = {
         'default_periods': 30,
         'default_train': 80,
         'color_ball': (0.1, 0.55, 0.1),
+        'yearly_max': 153,  # 双色球每周开3次(周二/四/日)，全年约150-153期，取153作跨年滚动阈值
     },
 }
 
@@ -83,11 +85,14 @@ def type_name(lottery_type):
     return cfg['name']
 
 
-# 大乐透/双色球年度期数经验阈值：官方每年约 150-153 期，留余量取 153 作为跨年滚动阈值。
-# ⚠️ 局限：这是基于历史规律的启发式推断，非精确日历。某年实际期数明显偏离 153 时，
-# 年末那一期的推算可能偏差（例如该年只有 150 期却按 153 判断不滚动）。彻底根治需接官方
+# 大乐透/双色球年度期数经验阈值（跨年滚动用）：官方每年期数因开奖频次不同而异——
+# 大乐透每周开 3 次约 155-156 期(取 156)，双色球每周开 3 次约 150-153 期(取 153)。
+# 各彩种的具体阈值下沉到 LOTTERY_TYPES 的 'yearly_max' 字段，next_period 按彩种读取。
+# ⚠️ 局限：这是基于历史规律的启发式推断，非精确日历。某年实际期数明显偏离阈值时，
+# 年末那一期的推算可能偏差（例如该年实际期数不足却按阈值判断不滚动）。彻底根治需接官方
 # 开奖日历；当前策略下，跨年前后应人工核对一次官方期号。真实期号始终以官方公布为准。
-DLT_SSQ_YEARLY_MAX = 153
+# 无 'yearly_max' 配置的彩种回退到该默认值。
+DEFAULT_YEARLY_MAX = 153
 
 
 def _is_leap_year(year: int) -> bool:
@@ -123,7 +128,9 @@ def next_period(lottery_type, period):
         raise ValueError(f"{lottery_type} 期号格式非法（应为 5 位 YYNNN，如 26072）: {period!r}")
     year = int(period[:2])
     seq = int(period[2:])
-    if seq >= DLT_SSQ_YEARLY_MAX:
+    # 按彩种读取各自的年度期数阈值，避免共用单一阈值导致年末期号提前/滞后滚动
+    yearly_max = LOTTERY_TYPES.get(lottery_type, {}).get('yearly_max', DEFAULT_YEARLY_MAX)
+    if seq >= yearly_max:
         return f"{year + 1:02d}001"
     return f"{year:02d}{seq + 1:03d}"
 

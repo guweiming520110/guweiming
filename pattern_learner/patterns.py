@@ -56,6 +56,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 0.8,
     },
+    # 注：原 vert_symmetry(垂直对称) 与 vert_line_3 均为竖直3连，去平移后footprint完全相同，已删除以消除双重计分
     {
         'name': 'vert_line_4',
         'label': '垂直4连',
@@ -263,15 +264,7 @@ PATTERN_TEMPLATES = [
         'base_score': 1.4,
     },
     # 注：原 step_up 与 diag_se_3 形状完全相同，已删除以消除双重计分
-    {
-        'name': 'step_down',
-        'label': '阶梯下降',
-        'offsets': [(0, 2), (1, 1), (2, 0)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'A',
-        'base_score': 1.2,
-    },
+    # 注：原 step_down 与 diag_sw_3 形状完全相同（去平移后footprint一致），已删除以消除双重计分
 
     # ---- 11. 曲线弧形（S级） ----
     {
@@ -301,15 +294,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 2.8,
     },
-    {
-        'name': 'arc_down_4',
-        'label': '下凹弧4点',
-        'offsets': [(0, 1), (1, 0), (1, 2), (2, 1)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'S',
-        'base_score': 2.8,
-    },
+    # 注：原 arc_down_4(下凹弧4点) 与 arc_up_4 均为同一菱形，去平移后footprint完全相同，已删除以消除双重计分
 
     # ---- 12. 对称图案（S级） ----
     {
@@ -321,15 +306,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 1.8,
     },
-    {
-        'name': 'vert_symmetry',
-        'label': '垂直对称',
-        'offsets': [(-1, 0), (0, 0), (1, 0)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'S',
-        'base_score': 1.8,
-    },
+    # 注：原 vert_symmetry(垂直对称) 已上移合并至 vert_line_3 处删除，见上文说明
     {
         'name': 'x_symmetry',
         'label': '点对称X形',
@@ -388,33 +365,9 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 2.5,
     },
-    {
-        'name': 'corner_missing_tl',
-        'label': '缺左上四角',
-        'offsets': [(0, 1), (1, 0), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
-    {
-        'name': 'corner_missing_tr',
-        'label': '缺右上四角',
-        'offsets': [(0, 0), (1, 0), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
-    {
-        'name': 'corner_missing_bl',
-        'label': '缺左下四角',
-        'offsets': [(0, 0), (0, 1), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
+    # 注：原 corner_missing_tl 与 triangle_tr 形状完全相同（去平移后footprint一致），已删除以消除双重计分
+    # 注：原 corner_missing_tr 与 triangle_tl 形状完全相同（去平移后footprint一致），已删除以消除双重计分
+    # 注：原 corner_missing_bl 与 triangle_br 形状完全相同（去平移后footprint一致），已删除以消除双重计分
     # 注：原 corner_missing_br 与 triangle_bl 形状完全相同，已删除以消除双重计分
 ]
 
@@ -566,7 +519,9 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                 continue
 
             valid = True
-            min_row = n_periods
+            # 行号越大表示期数越久远(row=0为最新一期)，用图案触及的最旧行(max_row)作为衰减基准，
+            # 使跨越更久远历史的图案权重更低，与"近期图案权重更高"的语义一致
+            max_row = 0
             for dr, dc in offsets:
                 r = anchor_row + dr * step
                 c = anchor_col + dc * step
@@ -576,12 +531,12 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                 if not matrix[r][c]:
                     valid = False
                     break
-                if r < min_row:
-                    min_row = r
+                if r > max_row:
+                    max_row = r
 
             if valid:
                 total_count += 1
-                total_weighted += decay ** min_row
+                total_weighted += decay ** max_row
 
         # 仅在实际匹配到图案时写入，保持与 count_patterns_around 的语义一致
         if total_count > 0:

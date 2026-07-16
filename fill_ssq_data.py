@@ -6,6 +6,7 @@
 """
 
 import re
+import time
 import sqlite3
 import pandas as pd
 from pathlib import Path
@@ -27,6 +28,25 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
+
+
+def _get_with_retry(url, max_retries=3, timeout=20):
+    """带指数退避重试的 GET 请求辅助函数。
+
+    对网络异常（超时/连接失败）与非 2xx 状态码做最多 max_retries 次重试，
+    退避间隔为 1s、2s、4s……全部失败返回 None。
+    """
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            wait = 2 ** attempt
+            print(f"  请求失败(第{attempt + 1}/{max_retries}次): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(wait)
+    return None
 
 
 def get_ssq_status():
@@ -54,13 +74,11 @@ def fetch_ssq_history_page(start=1, end=100):
         f'https://datachart.500.com/ssq/history/newinc/history.php'
         f'?start={start}&end={end}'
     )
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.encoding = 'gb2312'
-        return resp.text
-    except Exception as e:
-        print(f"  请求失败: {e}")
+    resp = _get_with_retry(url)
+    if resp is None:
         return None
+    resp.encoding = 'gb2312'
+    return resp.text
 
 
 def parse_ssq_numbers(html):

@@ -197,19 +197,31 @@ class DeepLearningPredictor:
         """使用深度学习模型预测（返回概率）"""
         df = df.sort_values('period').reset_index(drop=True)
 
+        # 数据不足一个序列窗口时直接返回空结果并告警，避免 range 产生负索引回绕取到错误历史
+        if len(df) < self.sequence_length:
+            print(f"⚠️  数据不足以进行深度学习预测（需要至少{self.sequence_length}条，当前{len(df)}条），跳过DL预测")
+            return {
+                'front_lstm': {},
+                'front_transformer': {},
+                'back_lstm': {},
+                'back_transformer': {}
+            }
+
         latest_front_seq = []
         latest_back_seq = []
 
-        for i in range(len(df) - self.sequence_length, len(df)):
+        # 取最近 sequence_length 期作为预测窗口，用切片而非负索引 range 防止回绕
+        window = df.iloc[len(df) - self.sequence_length:]
+        for _, row in window.iterrows():
             if self.lottery_type == 'dlt':
-                front_nums = [df.iloc[i][f'front_{k}'] for k in range(1, 6)]
-                back_nums = [df.iloc[i][f'back_{k}'] for k in range(1, 3)]
+                front_nums = [row[f'front_{k}'] for k in range(1, 6)]
+                back_nums = [row[f'back_{k}'] for k in range(1, 3)]
             elif self.lottery_type == 'ssq':
-                front_nums = [df.iloc[i][f'front_{k}'] for k in range(1, 7)]
-                back_nums = [df.iloc[i][f'back_{1}']]
+                front_nums = [row[f'front_{k}'] for k in range(1, 7)]
+                back_nums = [row[f'back_{1}']]
             else:
-                front_nums = [df.iloc[i][f'front_{k}'] for k in range(1, 6)]
-                back_nums = [df.iloc[i][f'back_{k}'] for k in range(1, 3)]
+                front_nums = [row[f'front_{k}'] for k in range(1, 6)]
+                back_nums = [row[f'back_{k}'] for k in range(1, 3)]
             latest_front_seq.append(front_nums)
             latest_back_seq.append(back_nums)
 
@@ -281,7 +293,49 @@ class DeepLearningPredictor:
         with open(f'{path}/dl_config.pkl', 'wb') as f:
             pickle.dump({'sequence_length': self.sequence_length, 'lottery_type': self.lottery_type}, f)
 
+        # 更新集成权重：ml_models.py 训练 RF/XGB 时会把 lstm/transformer 权重写成 0
+        # （因深度学习需单独训练）。这里训练完成后回填非零权重，否则加载时深度学习模型
+        # 虽被加载(use_deep_learning=True)，却因权重=0 而对融合结果零贡献，等于白训。
+        self._update_ensemble_weights(path)
+
         print(f"✅ 深度学习模型已保存到 {path}")
+
+    def _update_ensemble_weights(self, path):
+        """将深度学习权重回填进 ensemble_weights.pkl 并重新归一化四模型权重。
+
+        策略：保留 RF/XGB 的相对比例，把深度学习(LSTM+Transformer)整体占比设为
+        DL_SHARE，四者权重之和归一化为 1，使 LSTM/Transformer 真正参与融合。
+        若 ensemble_weights.pkl 不存在(未先训练 RF/XGB)，则用默认均衡权重。
+        """
+        DL_SHARE = 0.4          # 深度学习(LSTM+Transformer)整体占比
+        weights_path = f'{path}/ensemble_weights.pkl'
+
+        rf_w, xgb_w = 0.4, 0.6  # 默认 RF/XGB 相对比例(与 ml_models 一致)
+        if os.path.exists(weights_path):
+            try:
+                with open(weights_path, 'rb') as f:
+                    old = pickle.load(f)
+                rf_w = old.get('rf_weight', 0.4)
+                xgb_w = old.get('xgb_weight', 0.6)
+            except Exception:
+                pass
+
+        # 传统模型(RF+XGB)占 1-DL_SHARE，按原相对比例分配
+        ml_total = rf_w + xgb_w
+        if ml_total <= 0:
+            rf_w, xgb_w, ml_total = 0.4, 0.6, 1.0
+        ml_share = 1.0 - DL_SHARE
+        new_weights = {
+            'rf_weight': round(rf_w / ml_total * ml_share, 4),
+            'xgb_weight': round(xgb_w / ml_total * ml_share, 4),
+            'lstm_weight': round(DL_SHARE / 2, 4),
+            'transformer_weight': round(DL_SHARE / 2, 4),
+        }
+        with open(weights_path, 'wb') as f:
+            pickle.dump(new_weights, f)
+        print(f"  🔧 已回填集成权重: RF={new_weights['rf_weight']}, "
+              f"XGB={new_weights['xgb_weight']}, LSTM={new_weights['lstm_weight']}, "
+              f"Transformer={new_weights['transformer_weight']}")
 
     def load_models(self, path='models'):
         """加载深度学习模型"""

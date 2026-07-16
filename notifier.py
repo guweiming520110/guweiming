@@ -5,6 +5,7 @@
 推送预测结果、验证结果、准确率统计到钉钉群
 """
 
+import os
 import json
 import time
 import hmac
@@ -19,11 +20,22 @@ from typing import Optional
 
 # ==================== 配置 ====================
 
+# 钉钉凭据优先从环境变量读取，便于部署时覆盖而无需改动代码：
+#   DINGTALK_TOKEN  —— 机器人 access_token
+#   DINGTALK_SECRET —— 机器人加签 SECRET
+# 若环境变量未设置，则回退到下方硬编码的默认值（保持向后兼容）。
+# 安全建议：生产环境务必通过环境变量注入，并定期轮换 token 与 secret。
+_DEFAULT_ACCESS_TOKEN = "e41fbb639c62f85b3366168195a5e6e1f546080318cbd9fd6801ccbdb8ddd45d"
+_DEFAULT_SECRET = "SECb6a3cf1380e75c515abcb074b3ff5d56877372d2d28bddb862e12e71d973b757"
+
+# 优先取环境变量，缺失时回退默认值
+_ACCESS_TOKEN = os.environ.get('DINGTALK_TOKEN', _DEFAULT_ACCESS_TOKEN)
+SECRET = os.environ.get('DINGTALK_SECRET', _DEFAULT_SECRET)
+
 WEBHOOK_URL = (
     "https://oapi.dingtalk.com/robot/send"
-    "?access_token=e41fbb639c62f85b3366168195a5e6e1f546080318cbd9fd6801ccbdb8ddd45d"
+    f"?access_token={_ACCESS_TOKEN}"
 )
-SECRET = "SECb6a3cf1380e75c515abcb074b3ff5d56877372d2d28bddb862e12e71d973b757"
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent

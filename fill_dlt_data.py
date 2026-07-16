@@ -6,6 +6,7 @@
 """
 
 import re
+import time
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -28,6 +29,25 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
+
+
+def _get_with_retry(url, max_retries=3, timeout=20):
+    """带指数退避重试的 GET 请求辅助函数。
+
+    对网络异常（超时/连接失败）与非 2xx 状态码做最多 max_retries 次重试，
+    退避间隔为 1s、2s、4s……全部失败返回 None。
+    """
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            wait = 2 ** attempt
+            print(f"  请求失败(第{attempt + 1}/{max_retries}次): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(wait)
+    return None
 
 
 def get_db_status():
@@ -67,13 +87,11 @@ def get_db_status():
 def fetch_dlt_page(start_period, end_period):
     """从500彩票网获取大乐透数据页"""
     url = f'https://datachart.500.com/dlt/history/newinc/history.php?start={start_period}&end={end_period}'
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.encoding = 'gb2312'
-        return resp.text
-    except Exception as e:
-        print(f"  请求失败: {e}")
+    resp = _get_with_retry(url)
+    if resp is None:
         return None
+    resp.encoding = 'gb2312'
+    return resp.text
 
 
 def parse_dlt_numbers(html):
@@ -98,7 +116,7 @@ def parse_dlt_numbers(html):
     for line in lines:
         line = line.strip()
         # 匹配期号 (5位数字)
-        period_match = re.search(r'(2\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})', line)
+        period_match = re.search(r'([23]\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})', line)
         if period_match:
             period = period_match.group(1)
             front_nums = [int(period_match.group(i)) for i in range(2, 7)]
@@ -140,7 +158,7 @@ def parse_dlt_numbers(html):
         texts = [td.get_text(strip=True) for td in tds]
         # 首列为期号
         period = texts[0]
-        if not re.match(r'2\d{4}', period):
+        if not re.match(r'[23]\d{4}', period):
             continue
         # 提取号码（前5个数字在各自td中）
         try:
@@ -155,7 +173,7 @@ def parse_dlt_numbers(html):
             if all(1 <= n <= 35 for n in front) and all(1 <= n <= 12 for n in back):
                 records.append({
                     'period': period,
-                    'date': texts[-1] if len(texts) > 8 else f"{period[:4]}-01-01",
+                    'date': texts[-1] if len(texts) > 8 else f"20{period[:2]}-01-01",
                     'front': sorted(front),
                     'back': sorted(back),
                 })
@@ -253,6 +271,17 @@ def fill_missing_data():
                 pass
         conn.commit()
         return saved
+
+    # 先回补年内缺失的中段空洞：get_db_status 已算出 gaps（每段为
+    # (前一期, 后一期, 缺失数)），逐段爬取区间中间的期号并入库，避免只在末尾追加新期。
+    if status['gaps']:
+        print(f"\n  正在回补 {len(status['gaps'])} 段年内缺失...")
+        for prev_p, next_p, miss in status['gaps']:
+            gap_records = scrape_dlt_range(prev_p + 1, next_p - 1)
+            if gap_records:
+                saved = _save_records(gap_records)
+                total_added += saved
+                print(f"  回补 {prev_p + 1}~{next_p - 1} 段: 新增 {saved} 期")
 
     records = scrape_dlt_range(batch_start, batch_end)
     if records:

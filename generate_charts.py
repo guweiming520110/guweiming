@@ -359,8 +359,8 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
             output_dir=output_dir,
             predicted_front=predict_front,
             predicted_back=predict_back,
-            verified_front=list(verified_front_set) if verify else None,
-            verified_back=list(verified_back_set) if verify else None,
+            verified_front=list(verified_front_set) if (verify and verified_front_set is not None) else None,
+            verified_back=list(verified_back_set) if (verify and verified_back_set is not None) else None,
             predicted_reasons=pred_reasons,
         )
 

@@ -21,6 +21,16 @@ ML_FUSION_WEIGHT = 0.3  # RF/XGBoost 模型融合权重（图案引擎占 1 - ML
 ADAPTIVE_FUSION = True  # 是否根据历史准确率自动调整权重
 
 
+def _apply_tuned_params(lottery_type):
+    """尝试加载 auto_tune 调参产物覆盖 core.SCORE_PARAMS；失败不影响预测"""
+    try:
+        from auto_tune import apply_best_params
+        apply_best_params(lottery_type, verbose=True)
+    except Exception:
+        # 无调参产物或导入失败时静默使用默认参数
+        pass
+
+
 def _fusion_sort(pattern_scores, ml_probs, weight=ML_FUSION_WEIGHT, pattern_acc=None, ml_acc=None):
     """
     将图案引擎评分与 ML 模型的概率进行加权融合排序
@@ -125,6 +135,9 @@ def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0,
     print("  超级大乐透 · 几何图案预测 + ML 融合")
     print("█" * 55)
 
+    # 若存在调参产物 (models/best_params.json)，覆盖默认评分参数
+    _apply_tuned_params('dlt')
+
     learner_front = PatternLearner('dlt')
     learner_front.train(df, num_periods=num_periods)
     front_preds, front_report = learner_front.predict_with_report(top_k=top_k_front)
@@ -171,6 +184,9 @@ def predict_ssq(df, top_k_front=12, top_k_back=3, num_periods=50, backtest_n=0,
     print("  双色球 · 几何图案预测 + ML 融合")
     print("█" * 55)
 
+    # 若存在调参产物，覆盖默认评分参数
+    _apply_tuned_params('ssq')
+
     learner_front = PatternLearner('ssq')
     learner_front.train(df, num_periods=num_periods)
     front_preds, front_report = learner_front.predict_with_report(top_k=top_k_front)
@@ -212,6 +228,9 @@ def predict_kl8(df, top_k=30, num_periods=30, backtest_n=0):
     print("\n" + "█" * 55)
     print("  快乐8 · 几何图案预测（选十组合）")
     print("█" * 55)
+
+    # 若存在调参产物，覆盖默认评分参数
+    _apply_tuned_params('kl8')
 
     learner = PatternLearner('kl8')
     learner.train(df, num_periods=num_periods)

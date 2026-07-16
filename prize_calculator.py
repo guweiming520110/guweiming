@@ -5,6 +5,9 @@
 根据预测命中数计算三大彩种的中奖奖级和奖金
 """
 
+import itertools
+
+
 # ==================== 大乐透奖级规则 ====================
 # (前区命中数, 后区命中数, 奖级, 匹配描述, 奖金说明)
 DLT_PRIZE_RULES = [
@@ -51,6 +54,18 @@ KL8_SHI10_PRIZE_RULES = [
     (5,  '六等奖', '中5', '3元'),
     (0,  '六等奖', '中0', '2元（全不中）'),
 ]
+
+# 选十各奖级的单注固定奖金（元）；一/二等奖为浮动奖金，无法精确累加，用 None 标记
+# 复式拆单式后按此表累计总奖金，浮动档单独按注数统计
+KL8_SHI10_BONUS_AMOUNT = {
+    10: None,   # 一等奖：浮动（最高500万）
+    9:  None,   # 二等奖：浮动（约8000元）
+    8:  800,
+    7:  80,
+    6:  5,
+    5:  3,
+    0:  2,
+}
 
 # ==================== 快乐8 奖级规则 ====================
 # 快乐8 预测20个号码，实际开奖20个，按命中数量分级
@@ -259,12 +274,99 @@ def verify_kl8_combinations(combinations: dict, actual_nums: list) -> dict:
     actual_set = set(actual_nums)
 
     def _verify_one(nums):
+        nums = list(nums)
         hit = sorted(set(nums) & actual_set)
-        prize = get_kl8_sh10_prize(len(hit)) if len(nums) <= 12 else None
+        hit_count = len(hit)
+
+        # 单式（恰好10码）：直接按命中数定级
+        if len(nums) <= 10:
+            prize = get_kl8_sh10_prize(hit_count)
+            return {
+                'nums': sorted(nums),
+                'hit': hit,
+                'hit_count': hit_count,
+                'prize': prize,
+            }
+
+        # 复式（11码=10+1 / 12码=10+2）：本质是 C(n,10) 张 10码单式的组合，
+        # 例如 11码=C(11,10)=11 注、12码=C(12,10)=66 注。
+        # 必须对每一张 10码子集分别定级再汇总，不能把复式整体套单式奖级表，
+        # 否则命中数>10 会落入兜底误判为“未中奖”，或整体套表算错奖金。
+        hit_set = set(hit)
+        total_bonus = 0.0        # 可精确累计的固定奖金合计（元），浮动大奖不计入此值
+        has_floating = False     # 是否含浮动奖金档（一/二等奖，金额浮动无法精确累加）
+        winning_tickets = 0      # 中奖注数
+        ticket_count = 0         # 复式拆出的总注数
+        # 各奖级注数明细：level -> {'count', 'match_count', 'match_desc', 'bonus'}
+        level_breakdown = {}
+        best_prize = None        # 最高奖级单注（供旧读取方按奖级展示/排序）
+
+        for subset in itertools.combinations(sorted(nums), 10):
+            ticket_count += 1
+            sub_hit = len(hit_set & set(subset))
+            pz = get_kl8_sh10_prize(sub_hit)
+            if not pz['is_winning']:
+                continue
+            winning_tickets += 1
+            amount = KL8_SHI10_BONUS_AMOUNT.get(sub_hit)
+            if amount is None:
+                has_floating = True
+            else:
+                total_bonus += amount
+            lb = level_breakdown.setdefault(pz['level'], {
+                'count': 0,
+                'match_count': sub_hit,
+                'match_desc': pz['match_desc'],
+                'bonus': pz['bonus'],
+            })
+            lb['count'] += 1
+            if best_prize is None or sub_hit > best_prize['match_count']:
+                best_prize = pz
+
+        # 组装与单式兼容的 prize 字段（含总奖金与命中明细）
+        if winning_tickets > 0:
+            # 各奖级注数明细文字，按命中数从高到低
+            parts = [
+                f"{v['match_desc']}×{v['count']}注"
+                for _, v in sorted(level_breakdown.items(),
+                                   key=lambda kv: kv[1]['match_count'], reverse=True)
+            ]
+            if has_floating:
+                bonus_str = f"共{winning_tickets}注中奖（含浮动大奖），固定奖金合计{total_bonus:.0f}元"
+            else:
+                bonus_str = f"共{winning_tickets}注中奖，合计{total_bonus:.0f}元"
+            prize = {
+                'level': best_prize['level'],          # 最高奖级
+                'match_desc': '，'.join(parts),         # 各奖级注数明细
+                'bonus': bonus_str,                     # 总奖金描述
+                'is_winning': True,
+                'match_count': best_prize['match_count'],  # 最高命中数（供排序）
+                'is_complex': True,
+                'ticket_count': ticket_count,
+                'winning_tickets': winning_tickets,
+                'total_bonus': total_bonus,
+                'has_floating': has_floating,
+                'level_breakdown': level_breakdown,
+            }
+        else:
+            prize = {
+                'level': '未中奖',
+                'match_desc': f'最高中{min(hit_count, 10)}',
+                'bonus': '0元',
+                'is_winning': False,
+                'match_count': min(hit_count, 10),
+                'is_complex': True,
+                'ticket_count': ticket_count,
+                'winning_tickets': 0,
+                'total_bonus': 0.0,
+                'has_floating': False,
+                'level_breakdown': {},
+            }
+
         return {
             'nums': sorted(nums),
             'hit': hit,
-            'hit_count': len(hit),
+            'hit_count': hit_count,
             'prize': prize,
         }
 

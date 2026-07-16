@@ -116,8 +116,15 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # 未来期数
     future_p = future_periods_count()
     total_rows = n + future_p
-    latest_period_num = int(data['period'].iloc[-1])
-    future_nums = [str(latest_period_num + 1 + i) for i in range(future_p)]
+    # ⚠️ 跨年修复：不能简单用 latest_period_num+1+i（跨年会生成不存在的期号），
+    # 改用 lottery_types.next_period() 逐期递推，正确处理年度滚动
+    from lottery_types import next_period
+    latest_period_str = str(data['period'].iloc[-1])
+    future_nums = []
+    _p = latest_period_str
+    for _ in range(future_p):
+        _p = str(next_period(lottery_type, _p))
+        future_nums.append(_p)
     periods_labels = list(data['period'].astype(str).values) + future_nums
 
     # 加载历史预测记录
@@ -222,50 +229,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     if future_p > 0:
         ax.axhline(y=n - 0.5, color='#E8A020', linewidth=2.0, linestyle='-', zorder=2)
 
-    # ======== 连线（历史期）========
+    # ======== 连线 ========
+    # 说明：连线统一由下方"所有行连线（含历史+未来期）"的循环绘制，
+    # 此处仅初始化方向与计数器。历史连线曾在此重复绘制过一遍，
+    # 会导致连线数虚高约一倍、alpha 叠加变深，已删除该冗余循环。
     directions = [(1, 0), (0, 1), (1, 1), (-1, 1)]
     connection_count = 0
-
-    # 前区连线
-    for i in range(n):
-        for j in range(1, front_max + 1):
-            if not front_matrix[i][j]:
-                continue
-            for step in [1, 2]:
-                for dj, di in directions:
-                    ni, nj = i + di * step, j + dj * step
-                    if ni < 0 or ni >= n or nj < 1 or nj > front_max or not front_matrix[ni][nj]:
-                        continue
-                    if not should_connect(front_matrix, n, front_max, i, j, ni, nj, step):
-                        continue
-                    c1 = get_ball_color(j, cfg)
-                    c2 = get_ball_color(nj, cfg)
-                    avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
-                    lw = 4.5 if step == 1 else 3.0
-                    draw_connection(ax, j, i, nj, ni, color=avg_c, alpha=0.55, linewidth=lw, zorder=2)
-                    connection_count += 1
-
-    # 后区连线 (dlt/ssq)
-    if has_back:
-        for i in range(n):
-            for bj in range(back_min, back_max + 1):
-                if not back_matrix[i][bj]:
-                    continue
-                dj_disp = bj + back_shift_local
-                for step in [1, 2]:
-                    for dbj, di in directions:
-                        ni, nbj = i + di * step, bj + dbj * step
-                        if ni < 0 or ni >= n or nbj < back_min or nbj > back_max or not back_matrix[ni][nbj]:
-                            continue
-                        if not should_connect(back_matrix, n, back_max, i, bj, ni, nbj, step):
-                            continue
-                        ndj_disp = nbj + back_shift_local
-                        c1 = get_ball_color(bj, cfg)
-                        c2 = get_ball_color(nbj, cfg)
-                        avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
-                        lw = 4.5 if step == 1 else 3.0
-                        draw_connection(ax, dj_disp, i, ndj_disp, ni, color=avg_c, alpha=0.55, linewidth=lw, zorder=2)
-                        connection_count += 1
 
     # 将预测号码填入未来第1行（row_idx=n）
     has_pred = (predicted_front and len(predicted_front) > 0) or (predicted_back and len(predicted_back) > 0)

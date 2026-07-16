@@ -156,7 +156,16 @@ class LotteryPredictor:
         print(f"⚠️  深度学习模型训练耗时较长（10-20分钟），请运行: python deep_learning_models.py")
         print(f"✅ 集成策略配置完成（RF={self.rf_weight}, XGB={self.xgb_weight}）")
         print(f"   如需启用深度学习，训练完成后会自动加载LSTM和Transformer模型")
-    
+
+    def set_full_df(self, df):
+        """注入深度学习预测所需的完整历史数据。
+
+        load_models 不会恢复 full_df（仅 train_stacking 会设置），
+        因此从磁盘加载模型后启用深度学习时，必须由调用方显式注入，
+        否则 predict_with_probabilities 会因 full_df 为 None 跳过 LSTM/Transformer。
+        """
+        self.full_df = df.copy() if df is not None else None
+
     def validate_models(self, df):
         """验证模型是否与当前数据匹配"""
         if not self.rf_models_front:
@@ -210,17 +219,35 @@ class LotteryPredictor:
 
         latest_features = self.scaler.transform(latest_features)
 
+        # 判定本次预测深度学习是否真正可用：启用且已加载模型且已注入历史数据
+        dl_active = bool(self.use_deep_learning and self.dl_predictor and self.full_df is not None)
+
+        # 有效权重：深度学习不可用时，把本应给 LSTM/Transformer 的权重按 RF/XGB 原比例
+        # 回收并归一化到 RF/XGB，避免 DL 静默失效时 RF/XGB 权重被无谓稀释（各占0.2导致总和仅0.4）
+        rf_weight = self.rf_weight
+        xgb_weight = self.xgb_weight
+        if not dl_active and (self.lstm_weight or self.transformer_weight):
+            if self.use_deep_learning and self.full_df is None:
+                print("⚠️  深度学习已启用但未注入历史数据(full_df)，将回收DL权重至RF/XGB")
+            ml_total = self.rf_weight + self.xgb_weight
+            if ml_total > 0:
+                rf_weight = self.rf_weight / ml_total
+                xgb_weight = self.xgb_weight / ml_total
+            else:
+                # RF/XGB 权重均为0的异常配置，退化为均分
+                rf_weight = xgb_weight = 0.5
+
         front_proba_dict = {}
         back_proba_dict = {}
-        
+
         for model in self.rf_models_front:
             pred_proba = model.predict_proba(latest_features)[0]
             for cls, prob in zip(model.classes_, pred_proba):
                 num = int(cls)
                 if num not in front_proba_dict:
                     front_proba_dict[num] = []
-                front_proba_dict[num].append(prob * self.rf_weight)
-        
+                front_proba_dict[num].append(prob * rf_weight)
+
         for idx, model in enumerate(self.xgb_models_front):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_front[idx]
@@ -228,16 +255,16 @@ class LotteryPredictor:
                 num = int(le.inverse_transform([cls_idx])[0])
                 if num not in front_proba_dict:
                     front_proba_dict[num] = []
-                front_proba_dict[num].append(prob * self.xgb_weight)
-        
+                front_proba_dict[num].append(prob * xgb_weight)
+
         for model in self.rf_models_back:
             pred_proba = model.predict_proba(latest_features)[0]
             for cls, prob in zip(model.classes_, pred_proba):
                 num = int(cls)
                 if num not in back_proba_dict:
                     back_proba_dict[num] = []
-                back_proba_dict[num].append(prob * self.rf_weight)
-        
+                back_proba_dict[num].append(prob * rf_weight)
+
         for idx, model in enumerate(self.xgb_models_back):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_back[idx]
@@ -245,37 +272,34 @@ class LotteryPredictor:
                 num = int(le.inverse_transform([cls_idx])[0])
                 if num not in back_proba_dict:
                     back_proba_dict[num] = []
-                back_proba_dict[num].append(prob * self.xgb_weight)
-        
-        if self.use_deep_learning and self.dl_predictor:
-            if self.full_df is None:
-                print("⚠️  深度学习已启用但未注入历史数据(full_df)，跳过DL预测")
-            else:
-                try:
-                    dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
+                back_proba_dict[num].append(prob * xgb_weight)
 
-                    for num, prob in dl_probs['front_lstm'].items():
-                        if num not in front_proba_dict:
-                            front_proba_dict[num] = []
-                        front_proba_dict[num].append(prob * self.lstm_weight)
+        if dl_active:
+            try:
+                dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
 
-                    for num, prob in dl_probs['front_transformer'].items():
-                        if num not in front_proba_dict:
-                            front_proba_dict[num] = []
-                        front_proba_dict[num].append(prob * self.transformer_weight)
+                for num, prob in dl_probs['front_lstm'].items():
+                    if num not in front_proba_dict:
+                        front_proba_dict[num] = []
+                    front_proba_dict[num].append(prob * self.lstm_weight)
 
-                    for num, prob in dl_probs['back_lstm'].items():
-                        if num not in back_proba_dict:
-                            back_proba_dict[num] = []
-                        back_proba_dict[num].append(prob * self.lstm_weight)
+                for num, prob in dl_probs['front_transformer'].items():
+                    if num not in front_proba_dict:
+                        front_proba_dict[num] = []
+                    front_proba_dict[num].append(prob * self.transformer_weight)
 
-                    for num, prob in dl_probs['back_transformer'].items():
-                        if num not in back_proba_dict:
-                            back_proba_dict[num] = []
-                        back_proba_dict[num].append(prob * self.transformer_weight)
-                except Exception as e:
-                    print(f"⚠️  深度学习预测失败: {e}")
-        
+                for num, prob in dl_probs['back_lstm'].items():
+                    if num not in back_proba_dict:
+                        back_proba_dict[num] = []
+                    back_proba_dict[num].append(prob * self.lstm_weight)
+
+                for num, prob in dl_probs['back_transformer'].items():
+                    if num not in back_proba_dict:
+                        back_proba_dict[num] = []
+                    back_proba_dict[num].append(prob * self.transformer_weight)
+            except Exception as e:
+                print(f"⚠️  深度学习预测失败: {e}")
+
         for num in front_proba_dict:
             front_proba_dict[num] = np.mean(front_proba_dict[num])
         
@@ -358,6 +382,11 @@ class LotteryPredictor:
     
     def predict_numbers(self, latest_features):
         if isinstance(latest_features, pd.DataFrame):
+            # 严格对齐训练时的特征列顺序，缺失列补0，避免特征漂移导致 scaler 错位
+            if self.feature_cols is not None:
+                latest_features = latest_features.reindex(
+                    columns=self.feature_cols, fill_value=0
+                ).fillna(0)
             latest_features = latest_features.values
         
         if len(latest_features.shape) == 1:
@@ -482,19 +511,25 @@ class LotteryPredictor:
         if os.path.exists(f'{load_path}/ensemble_weights.pkl'):
             with open(f'{load_path}/ensemble_weights.pkl', 'rb') as f:
                 weights = pickle.load(f)
-                self.rf_weight = weights.get('rf_weight', 0.2)
-                self.xgb_weight = weights.get('xgb_weight', 0.2)
-                self.lstm_weight = weights.get('lstm_weight', 0.3)
-                self.transformer_weight = weights.get('transformer_weight', 0.3)
+                # 缺键时回退到 __init__ 默认权重（RF=0.4/XGB=0.6/LSTM=0/Transformer=0），
+                # 保持与初始化一致，避免旧权重文件缺键导致 DL 权重被误置为非零
+                missing_keys = [k for k in ('rf_weight', 'xgb_weight', 'lstm_weight', 'transformer_weight')
+                                if k not in weights]
+                if missing_keys:
+                    print(f"⚠️  集成权重文件缺少键 {missing_keys}，对应项回退为默认值")
+                self.rf_weight = weights.get('rf_weight', 0.4)
+                self.xgb_weight = weights.get('xgb_weight', 0.6)
+                self.lstm_weight = weights.get('lstm_weight', 0.0)
+                self.transformer_weight = weights.get('transformer_weight', 0.0)
             print(f"✅ 模型已从 {path} 加载 (RF={self.rf_weight}, XGB={self.xgb_weight}, LSTM={self.lstm_weight}, Transformer={self.transformer_weight})")
         else:
             print(f"✅ 模型已从 {path} 加载 (使用默认权重)")
         
-        if os.path.exists(f'{path}/dl_config.pkl'):
+        if os.path.exists(f'{load_path}/dl_config.pkl'):
             try:
                 from deep_learning_models import DeepLearningPredictor
                 self.dl_predictor = DeepLearningPredictor()
-                if self.dl_predictor.load_models(path):
+                if self.dl_predictor.load_models(load_path):
                     self.use_deep_learning = True
                 else:
                     self.use_deep_learning = False
