@@ -167,6 +167,12 @@ cython_debug/
 #   - 二进制无法 diff/merge，多端协作必然冲突
 # 需要留存时用独立的模型/图表备份机制，而不是塞进 git。
 models/
+models_backup_*/
 charts/*.png
 charts/*.jpg
 charts/*.jpeg
+
+# 数据库权威副本在仓库根目录(../lottery.db)，子模块内的 lottery.db 属陈旧重复，不纳入版本控制
+lottery.db
+# 开发过程截图（replit 遗留），非源代码
+attached_assets/
