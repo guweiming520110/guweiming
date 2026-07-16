@@ -514,56 +514,57 @@ if __name__ == "__main__":
     ROOT_DIR = BASE_DIR.parent
     DB_PATH = ROOT_DIR / 'lottery.db'
 
-    # 先训练大乐透
-    print("=" * 60)
-    print("开始训练大乐透 (dlt) 模型")
-    print("=" * 60)
+    # 彩种中文名，仅用于日志展示
+    TYPE_NAMES = {'dlt': '大乐透', 'ssq': '双色球'}
 
-    conn = sqlite3.connect(str(DB_PATH))
-    df_dlt = pd.read_sql(
-        "SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn
-    )
-    conn.close()
+    def _train_one(lottery_type):
+        """训练单个彩种的 RF/XGB/Stacking 模型并保存。
 
-    if not df_dlt.empty:
-        fe = FeatureEngineer(df_dlt, lottery_type='dlt')
+        独立函数 + 调用侧 try/except 隔离：某个彩种数据不足或训练报错时，
+        只跳过该彩种（返回 False），不影响其余彩种继续训练。
+        """
+        name = TYPE_NAMES.get(lottery_type, lottery_type)
+        print("=" * 60)
+        print(f"开始训练{name} ({lottery_type}) 模型")
+        print("=" * 60)
+
+        conn = sqlite3.connect(str(DB_PATH))
+        df = pd.read_sql(
+            "SELECT * FROM lottery_records WHERE lottery_type=? ORDER BY period",
+            conn, params=(lottery_type,)
+        )
+        conn.close()
+
+        if df.empty:
+            print(f"❌ 没有找到{name}数据，跳过")
+            return False
+
+        fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_features = fe.extract_all_features()
         print(f"✅ 特征提取完成，数据维度: {df_features.shape}")
 
-        predictor = LotteryPredictor(lottery_type='dlt')
+        predictor = LotteryPredictor(lottery_type=lottery_type)
         predictor.train_random_forest(df_features)
         predictor.train_xgboost(df_features)
         predictor.train_stacking(df_features)
         predictor.save_models(path='models')
 
-        print("\n✅ 大乐透模型训练和保存完成")
-    else:
-        print("❌ 没有找到大乐透数据")
+        print(f"\n✅ {name}模型训练和保存完成")
+        return True
 
-    # 再训练双色球
-    print("\n" + "=" * 60)
-    print("开始训练双色球 (ssq) 模型")
-    print("=" * 60)
+    results = {}
+    for lt in ('dlt', 'ssq'):
+        try:
+            results[lt] = _train_one(lt)
+        except Exception as e:
+            # 单彩种失败（如数据不足抛 ValueError）不应中断其余彩种训练
+            results[lt] = False
+            print(f"\n⚠️ {TYPE_NAMES.get(lt, lt)} ({lt}) 训练失败，已跳过：{e}")
+        print()
 
-    conn = sqlite3.connect(str(DB_PATH))
-    df_ssq = pd.read_sql(
-        "SELECT * FROM lottery_records WHERE lottery_type='ssq' ORDER BY period", conn
-    )
-    conn.close()
-
-    if not df_ssq.empty:
-        fe = FeatureEngineer(df_ssq, lottery_type='ssq')
-        df_features = fe.extract_all_features()
-        print(f"✅ 特征提取完成，数据维度: {df_features.shape}")
-
-        predictor = LotteryPredictor(lottery_type='ssq')
-        predictor.train_random_forest(df_features)
-        predictor.train_xgboost(df_features)
-        predictor.train_stacking(df_features)
-        predictor.save_models(path='models')
-
-        print("\n✅ 双色球模型训练和保存完成")
-    else:
-        print("❌ 没有找到双色球数据")
-
-    print("\n🎉 所有模型训练完成！")
+    ok = [lt for lt, v in results.items() if v]
+    failed = [lt for lt, v in results.items() if not v]
+    print("🎉 模型训练结束！")
+    print(f"   成功: {', '.join(ok) if ok else '无'}")
+    if failed:
+        print(f"   跳过/失败: {', '.join(failed)}")

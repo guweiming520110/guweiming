@@ -41,13 +41,19 @@ def get_ssq_status():
 
 
 def fetch_ssq_history_page(start=1, end=100):
-    """从500彩票网获取双色球历史数据页面
+    """从500彩票网按区间获取双色球历史数据页面。
 
-    注意：500.com 双色球 history.shtml 页面不支持 start/end 区间参数，
-    实际仅返回默认页（约最近100期）。start/end 暂保留以兼容调用方，但不生效。
-    如需按区间补全历史，需改用支持区间的接口。
+    使用 datachart.500.com 的 newinc/history.php 区间接口（与大乐透同源），
+    支持 start/end 期号区间参数，可按年批量补全历史。
+    期号格式 YYNNN（如 25001 = 2025年第1期）。
+
+    历史教训：旧实现用 history.shtml 页面且忽略区间参数，只能拿到最近一页
+    （且解析后仅入库 30 余期），导致双色球历史数据长期不足、无法训练模型。
     """
-    url = f'https://datachart.500.com/ssq/history/history.shtml'
+    url = (
+        f'https://datachart.500.com/ssq/history/newinc/history.php'
+        f'?start={start}&end={end}'
+    )
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.encoding = 'gb2312'
@@ -130,7 +136,14 @@ def parse_ssq_numbers(html):
 
 
 def fill_ssq_data():
-    """补全双色球数据"""
+    """补全双色球数据。
+
+    采用区间接口按年分批爬取（与大乐透一致）：
+      - 空库场景：从去年年初（YYNNN，如 25001）起爬，保证有足够历史供训练
+      - 已有数据：从最新期之后继续补
+      - 跨年续爬：双色球期号按年重置（如 25151 → 26001），补完去年后若最新期
+        仍停在去年，则从今年年初再爬一轮
+    """
     status = get_ssq_status()
     print(f"\n{'='*50}")
     print(f"  双色球数据补全")
@@ -139,54 +152,66 @@ def fill_ssq_data():
 
     conn = sqlite3.connect(str(DB_PATH))
 
-    # 直接从500.com获取最新100期数据
-    print(f"\n  正在从500.com获取双色球数据...")
-    html = fetch_ssq_history_page()
-    if not html:
-        print("  ❌ 获取数据失败")
-        conn.close()
-        return
+    def _save_records(records):
+        """将一批记录写入数据库，只插入不存在的期号，返回实际新增条数"""
+        existing = set(r[0] for r in conn.execute(
+            "SELECT period FROM lottery_records WHERE lottery_type='ssq'"
+        ).fetchall())
+        saved = 0
+        for r in records:
+            if r['period'] in existing:
+                continue
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO lottery_records
+                       (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, front_6, back_1)
+                       VALUES ('ssq', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (r['period'], r['date'],
+                     r['front'][0], r['front'][1], r['front'][2],
+                     r['front'][3], r['front'][4], r['front'][5],
+                     r['back'])
+                )
+                saved += 1
+            except Exception:
+                pass
+        conn.commit()
+        return saved
 
-    records = parse_ssq_numbers(html)
-    if not records:
-        print("  ❌ 解析数据失败")
-        conn.close()
-        return
+    def _scrape_year(start_yy):
+        """爬取某年（YY）全年数据并入库，返回该年实际新增条数。
 
-    print(f"  成功解析 {len(records)} 期数据")
-    print(f"  范围: {records[0]['period']} ~ {records[-1]['period']}")
+        双色球每年约 150 期，一次区间请求（start=YY001, end=YY999）即可覆盖全年。
+        """
+        yy = start_yy
+        start_p = yy * 1000 + 1        # 如 25001
+        end_p = yy * 1000 + 999        # 如 25999
+        html = fetch_ssq_history_page(start=start_p, end=end_p)
+        if not html:
+            print(f"  ⚠️ {yy} 年数据请求失败")
+            return 0
+        records = parse_ssq_numbers(html)
+        if not records:
+            return 0
+        saved = _save_records(records)
+        print(f"  {yy} 年: 解析 {len(records)} 期, 新增 {saved} 期 "
+              f"(范围 {records[0]['period']}~{records[-1]['period']})")
+        return saved
 
-    # 只保存数据库中不存在的期号
-    existing = set(r[0] for r in conn.execute(
-        "SELECT period FROM lottery_records WHERE lottery_type='ssq'"
-    ).fetchall())
+    total_added = 0
+    cur_yy = datetime.now().year % 100
 
-    new_records = [r for r in records if r['period'] not in existing]
-    print(f"  新增: {len(new_records)} 期")
-
-    saved = 0
-    for r in new_records:
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO lottery_records 
-                   (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, front_6, back_1)
-                   VALUES ('ssq', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (r['period'], r['date'],
-                 r['front'][0], r['front'][1], r['front'][2],
-                 r['front'][3], r['front'][4], r['front'][5],
-                 r['back'])
-            )
-            saved += 1
-        except Exception as e:
-            pass
-    conn.commit()
+    print(f"\n  正在从500.com按年区间补全双色球数据...")
+    if not status['count']:
+        # 空库：先补去年再补今年，保证历史充足
+        total_added += _scrape_year(cur_yy - 1)
+    total_added += _scrape_year(cur_yy)
 
     # 打印补全后状态
     new_status = get_ssq_status()
     print(f"\n{'='*50}")
     print(f"  补全完成!")
     print(f"  原来: {status['count']} 条")
-    print(f"  现在: {new_status['count']} 条 (+{new_status['count'] - status['count']})")
+    print(f"  现在: {new_status['count']} 条 (+{total_added})")
     print(f"  最新: {new_status['max_period']}")
     print(f"{'='*50}")
 
