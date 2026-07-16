@@ -183,17 +183,9 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 3.0,
     },
-    {
-        'name': 'cross_3',
-        'label': '十字3臂',
-        'offsets': [(0, 0), (0, 1), (0, -1), (1, 0)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'S',
-        'base_score': 2.5,
-    },
 
     # ---- 8. T型（A级） ----
+    # 注：原 cross_3(十字3臂) 与 t_shape_down 形状完全相同，已删除以消除双重计分
     {
         'name': 't_shape_down',
         'label': 'T型向下',
@@ -270,15 +262,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'A',
         'base_score': 1.4,
     },
-    {
-        'name': 'step_up',
-        'label': '阶梯上升',
-        'offsets': [(0, 0), (1, 1), (2, 2)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'A',
-        'base_score': 1.2,
-    },
+    # 注：原 step_up 与 diag_se_3 形状完全相同，已删除以消除双重计分
     {
         'name': 'step_down',
         'label': '阶梯下降',
@@ -431,15 +415,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'A',
         'base_score': 1.6,
     },
-    {
-        'name': 'corner_missing_br',
-        'label': '缺右下四角',
-        'offsets': [(0, 0), (0, 1), (1, 0)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
+    # 注：原 corner_missing_br 与 triangle_bl 形状完全相同，已删除以消除双重计分
 ]
 
 # ==================== 图案匹配引擎 ====================

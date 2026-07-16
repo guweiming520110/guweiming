@@ -59,6 +59,38 @@ def main():
     TOTAL_STEPS = 4
 
     # ──────────────────────────────
+    # Step 0: 初始化数据库表结构（首次运行/空库场景必需）
+    # lottery_records 存放大乐透(front_1..5+back_1,2)与双色球(front_1..6+back_1)开奖数据，
+    # prediction_records 存放预测记录。二者若不存在，后续步骤会因 "no such table" 直接崩溃。
+    # ──────────────────────────────
+    _init_conn = sqlite3.connect(str(DB_PATH))
+    _init_conn.execute("""
+        CREATE TABLE IF NOT EXISTS lottery_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lottery_type VARCHAR(20) NOT NULL,
+            period VARCHAR(20) NOT NULL,
+            date VARCHAR(30) NOT NULL DEFAULT '',
+            front_1 INTEGER, front_2 INTEGER, front_3 INTEGER,
+            front_4 INTEGER, front_5 INTEGER, front_6 INTEGER,
+            back_1 INTEGER, back_2 INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(lottery_type, period)
+        )
+    """)
+    _init_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lottery_type_period "
+        "ON lottery_records(lottery_type, period)"
+    )
+    _init_conn.commit()
+    _init_conn.close()
+    # prediction_records 复用 notifier 的建表逻辑，避免 schema 定义漂移
+    try:
+        from notifier import _ensure_table
+        _ensure_table()
+    except Exception as e:
+        print(f"  ⚠️ 预测记录表初始化异常: {e}")
+
+    # ──────────────────────────────
     # Step 1: 先更新三大彩种开奖数据
     # 关键：必须在验证之前更新，否则本轮新开奖要等下一轮才验证，形成"落后一轮"堆积
     # ──────────────────────────────
