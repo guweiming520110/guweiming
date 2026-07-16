@@ -83,35 +83,47 @@ def type_name(lottery_type):
     return cfg['name']
 
 
+# 大乐透/双色球年度期数经验阈值：官方每年约 150-153 期，留余量取 153 作为跨年滚动阈值。
+# ⚠️ 局限：这是基于历史规律的启发式推断，非精确日历。某年实际期数明显偏离 153 时，
+# 年末那一期的推算可能偏差（例如该年只有 150 期却按 153 判断不滚动）。彻底根治需接官方
+# 开奖日历；当前策略下，跨年前后应人工核对一次官方期号。真实期号始终以官方公布为准。
+DLT_SSQ_YEARLY_MAX = 153
+
+
+def _is_leap_year(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
 def next_period(lottery_type, period):
     """
     根据当前期号推算下一期期号，正确处理跨年滚动。
 
     期号格式：
-      - dlt/ssq: 5位 YYNNN（如 26072 = 2026年第72期），每年约150期
-      - kl8:     7位 YYYYNNN（如 2026170 = 2026年第170期），每天1期约365期
+      - dlt/ssq: 5位 YYNNN（如 26072 = 2026年第72期）
+      - kl8:     7位 YYYYNNN（如 2026170 = 2026年第170期），每天1期
 
-    跨年规则：当本年序号已达到该彩种年度最大期数附近时，下一期归零到次年第1期。
-    注意：这是基于历史规律的推断，真实期号以官方公布为准。
+    非法期号格式会抛 ValueError，避免静默产生错误期号后污染下游预测/验证。
     """
     period = str(period).strip()
 
     if lottery_type == 'kl8':
-        # YYYYNNN：年份4位 + 序号3位起（实际可能更多位），按总长拆分
+        # YYYYNNN：年份4位 + 序号（至少3位）
+        if len(period) < 5 or not period.isdigit():
+            raise ValueError(f"快乐8期号格式非法（应为 YYYYNNN，如 2026170）: {period!r}")
         year = int(period[:4])
         seq = int(period[4:])
         # 快乐8每天开一期，平年365期/闰年366期，超过即滚动到次年
-        days_in_year = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
+        days_in_year = 366 if _is_leap_year(year) else 365
         if seq >= days_in_year:
             return f"{year + 1}001"
         return f"{year}{seq + 1:03d}"
 
     # dlt / ssq：YYNNN
+    if len(period) != 5 or not period.isdigit():
+        raise ValueError(f"{lottery_type} 期号格式非法（应为 5 位 YYNNN，如 26072）: {period!r}")
     year = int(period[:2])
     seq = int(period[2:])
-    # 大乐透/双色球每年约151-153期，留出余量用153作为滚动阈值
-    YEARLY_MAX = 153
-    if seq >= YEARLY_MAX:
+    if seq >= DLT_SSQ_YEARLY_MAX:
         return f"{year + 1:02d}001"
     return f"{year:02d}{seq + 1:03d}"
 

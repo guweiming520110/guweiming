@@ -223,29 +223,25 @@ def fill_missing_data():
 
     latest = status['latest_period']
 
-    # 确定要获取的范围：从最新期+1到当前最新
-    # 先试探最新期号（期号为 YYNNN，前2位是年份后两位）
-    test_periods = []
-    year = int(str(latest)[:2])
-    for y in [year, year + 1]:
-        for p in range(1, 160, 10):
-            test_periods.append(int(f"{y:02d}{p:03d}"))
-
-    # 从最新期开始，分批获取后续数据
-    batch_start = latest + 1
+    # 空库场景：latest=0 时若从第1期爬，会落到 1~51 期（真实大乐透早已是 26xxx 期），
+    # 什么都抓不到。改为从"去年年初"起爬（期号 YYNNN），靠下方 while 循环往后补齐，
+    # 保证有足够历史期数供预测使用。
+    if not latest:
+        cur_yy = datetime.now().year % 100
+        batch_start = (cur_yy - 1) * 1000 + 1  # 去年年初，如 2026 → 25001
+    else:
+        batch_start = latest + 1
     batch_end = batch_start + 50
 
     print(f"\n  正在检查 {batch_start} 期之后的新数据...")
 
-    records = scrape_dlt_range(batch_start, batch_end)
-    if records:
+    def _save_records(records):
+        """将一批记录写入数据库，返回实际保存条数"""
         saved = 0
         for r in records:
             try:
-                front_str = ','.join(str(n) for n in r['front'])
-                back_str = ','.join(str(n) for n in r['back'])
                 conn.execute(
-                    """INSERT OR REPLACE INTO lottery_records 
+                    """INSERT OR REPLACE INTO lottery_records
                        (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, back_1, back_2)
                        VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (r['period'], r['date'],
@@ -253,9 +249,14 @@ def fill_missing_data():
                      r['back'][0], r['back'][1])
                 )
                 saved += 1
-            except Exception as e:
+            except Exception:
                 pass
         conn.commit()
+        return saved
+
+    records = scrape_dlt_range(batch_start, batch_end)
+    if records:
+        saved = _save_records(records)
         total_added += saved
         print(f"  新增 {saved} 期数据")
 
@@ -266,25 +267,30 @@ def fill_missing_data():
             records = scrape_dlt_range(batch_start, batch_end)
             if not records:
                 break
-            saved = 0
-            for r in records:
-                try:
-                    front_str = ','.join(str(n) for n in r['front'])
-                    back_str = ','.join(str(n) for n in r['back'])
-                    conn.execute(
-                        """INSERT OR REPLACE INTO lottery_records 
-                           (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, back_1, back_2)
-                           VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (r['period'], r['date'],
-                         r['front'][0], r['front'][1], r['front'][2], r['front'][3], r['front'][4],
-                         r['back'][0], r['back'][1])
-                    )
-                    saved += 1
-                except Exception:
-                    pass
-            conn.commit()
+            saved = _save_records(records)
             total_added += saved
             print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
+
+    # 跨年续爬：大乐透期号按年重置（如 ...25150 → 26001），区间接口从 25151 起会返回空，
+    # 导致今年数据补不上。补完去年后，若最新期仍停在去年，则从今年年初继续爬一轮。
+    cur_yy = datetime.now().year % 100
+    last_period = int(conn.execute(
+        "SELECT MAX(CAST(period AS INTEGER)) FROM lottery_records WHERE lottery_type='dlt'"
+    ).fetchone()[0] or 0)
+    if last_period and (last_period // 1000) < cur_yy:
+        batch_start = cur_yy * 1000 + 1  # 今年年初，如 26001
+        batch_end = batch_start + 50
+        print(f"\n  跨年续爬 {cur_yy} 年数据（从 {batch_start} 起）...")
+        records = scrape_dlt_range(batch_start, batch_end)
+        while records:
+            saved = _save_records(records)
+            total_added += saved
+            print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
+            if len(records) < 50:
+                break
+            batch_start = int(records[-1]['period']) + 1
+            batch_end = batch_start + 50
+            records = scrape_dlt_range(batch_start, batch_end)
 
     conn.close()
 
