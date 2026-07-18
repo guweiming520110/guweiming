@@ -71,6 +71,11 @@ class FeatureEngineer:
         self.add_edge_code_features()
         self.add_repeat_number_features()
 
+        # === Phase 6: 共现对/邻号/区间分布增强 ===
+        self.add_enhanced_cooccurrence_features()
+        self.add_neighbor_features()
+        self.add_zone4_features()
+
         return self.df
 
     def add_number_frequency(self):
@@ -943,6 +948,164 @@ class FeatureEngineer:
         self.df['repeat_from_last'] = repeat_counts
         # 防数据泄漏：重号数用到了本期(idx)开奖号码，整体下移一期
         self.df['repeat_from_last'] = self.df['repeat_from_last'].shift(1).fillna(0)
+
+    # ============================================================
+    # Phase 6: 共现对 / 邻号 / 区间分布增强
+    # ============================================================
+
+    def _get_current_nums(self, row):
+        """统一提取某一行的开奖号码（兼容KL8与其他彩种）"""
+        if self.lottery_type == 'kl8':
+            nums = row.get('num_list', [])
+            if isinstance(nums, str):
+                nums = [int(x) for x in nums.split(',') if x.strip()]
+            return sorted(nums)
+        return sorted([row[col] for col in self.front_cols if pd.notna(row[col])])
+
+    def add_enhanced_cooccurrence_features(self):
+        """
+        增强共现特征：统计历史TOP共现对/三连号在本期号码中的覆盖度与得分和。
+        仅使用严格历史累计的 pair/triplet 频率，计算完成后再整体下移一期防泄漏。
+        """
+        pair_counts = Counter()
+        triplet_counts = Counter()
+
+        pair_cov5 = []
+        pair_cov10 = []
+        pair_score_sum = []
+        triplet_cov5 = []
+        triplet_cov10 = []
+        triplet_score_sum = []
+
+        for idx, row in self.df.iterrows():
+            nums = self._get_current_nums(row)
+            num_set = set(nums)
+
+            # 用历史TOP共现对计算覆盖度和得分
+            top_pairs = pair_counts.most_common(5)
+            top10_pairs = pair_counts.most_common(10)
+            cov5 = sum(1 for p, _ in top_pairs if p[0] in num_set and p[1] in num_set)
+            cov10 = sum(1 for p, _ in top10_pairs if p[0] in num_set and p[1] in num_set)
+            score = sum(pair_counts.get((nums[i], nums[j]), 0)
+                        for i in range(len(nums)) for j in range(i + 1, len(nums)))
+
+            pair_cov5.append(cov5)
+            pair_cov10.append(cov10)
+            pair_score_sum.append(score)
+
+            # 三连号
+            top_triplets = triplet_counts.most_common(5)
+            top10_triplets = triplet_counts.most_common(10)
+            tcov5 = sum(1 for t, _ in top_triplets
+                        if t[0] in num_set and t[1] in num_set and t[2] in num_set)
+            tcov10 = sum(1 for t, _ in top10_triplets
+                         if t[0] in num_set and t[1] in num_set and t[2] in num_set)
+            tscore = sum(triplet_counts.get((nums[i], nums[j], nums[k]), 0)
+                         for i in range(len(nums))
+                         for j in range(i + 1, len(nums))
+                         for k in range(j + 1, len(nums)))
+
+            triplet_cov5.append(tcov5)
+            triplet_cov10.append(tcov10)
+            triplet_score_sum.append(tscore)
+
+            # 累计本期共现关系到历史字典（供后续期使用）
+            for i in range(len(nums)):
+                for j in range(i + 1, len(nums)):
+                    pair_counts[(nums[i], nums[j])] += 1
+                for j in range(i + 1, len(nums)):
+                    for k in range(j + 1, len(nums)):
+                        triplet_counts[(nums[i], nums[j], nums[k])] += 1
+
+        self.df['pair_coverage_top5'] = pair_cov5
+        self.df['pair_coverage_top10'] = pair_cov10
+        self.df['pair_score_sum'] = pair_score_sum
+        self.df['triplet_coverage_top5'] = triplet_cov5
+        self.df['triplet_coverage_top10'] = triplet_cov10
+        self.df['triplet_score_sum'] = triplet_score_sum
+
+        # 防数据泄漏：覆盖度/得分用到了本期开奖号码，整体下移一期
+        for col in ['pair_coverage_top5', 'pair_coverage_top10', 'pair_score_sum',
+                    'triplet_coverage_top5', 'triplet_coverage_top10', 'triplet_score_sum']:
+            self.df[col] = self.df[col].shift(1).fillna(0)
+
+    def add_neighbor_features(self):
+        """
+        邻号特征：上期开奖号码的 ±1 邻号，在本期开奖号码中的命中情况。
+        对KL8同样适用（重号邻号现象普遍）。
+        """
+        neighbor_hit_counts = []
+        neighbor_hit_ratios = []
+
+        for idx in range(len(self.df)):
+            if idx == 0:
+                neighbor_hit_counts.append(0)
+                neighbor_hit_ratios.append(0.0)
+                continue
+
+            prev_nums = self._get_current_nums(self.df.iloc[idx - 1])
+            curr_nums = self._get_current_nums(self.df.iloc[idx])
+
+            neighbor_set = set()
+            for num in prev_nums:
+                if self.front_range[0] <= num - 1 < self.front_range[1]:
+                    neighbor_set.add(num - 1)
+                if self.front_range[0] <= num + 1 < self.front_range[1]:
+                    neighbor_set.add(num + 1)
+
+            hit = len(set(curr_nums) & neighbor_set)
+            neighbor_hit_counts.append(hit)
+            neighbor_hit_ratios.append(hit / len(neighbor_set) if neighbor_set else 0.0)
+
+        self.df['neighbor_hit_count'] = neighbor_hit_counts
+        self.df['neighbor_hit_ratio'] = neighbor_hit_ratios
+        # 防数据泄漏：命中数用到了本期开奖号码，整体下移一期
+        self.df['neighbor_hit_count'] = self.df['neighbor_hit_count'].shift(1).fillna(0)
+        self.df['neighbor_hit_ratio'] = self.df['neighbor_hit_ratio'].shift(1).fillna(0)
+
+    def add_zone4_features(self):
+        """
+        四区分布特征：比三区更细的区间粒度，并加入区间遗漏信息。
+        用于捕捉更精细的号码分布模式。
+        """
+        total = self.front_range[1] - self.front_range[0]
+        zone_size = total / 4.0
+
+        zone_counts = {i: [] for i in range(1, 5)}
+        zone_omissions = {i: [] for i in range(1, 5)}
+        last_seen = {i: -1 for i in range(1, 5)}
+
+        for idx, row in self.df.iterrows():
+            nums = self._get_current_nums(row)
+            counts = {i: 0 for i in range(1, 5)}
+            for num in nums:
+                zid = min(int((num - self.front_range[0]) / zone_size) + 1, 4)
+                counts[zid] += 1
+
+            for zid in range(1, 5):
+                zone_counts[zid].append(counts[zid])
+                if counts[zid] > 0:
+                    last_seen[zid] = idx
+                zone_omissions[zid].append(idx - last_seen[zid] if last_seen[zid] >= 0 else 0)
+
+        for zid in range(1, 5):
+            self.df[f'zone4_{zid}_count'] = zone_counts[zid]
+
+        # 四区最大遗漏（最冷的区间已多少期未出号）
+        self.df['zone4_max_omission'] = [max(zone_omissions[z][i] for z in range(1, 5))
+                                          for i in range(len(self.df))]
+
+        # 当前出号最多的四区ID（1-4）
+        self.df['zone4_hot_zone_id'] = [max(range(1, 5), key=lambda z: zone_counts[z][i])
+                                         for i in range(len(self.df))]
+
+        # 防数据泄漏：四区计数/遗漏/热区ID均用到了本期开奖号码，整体下移一期
+        self.df['zone4_1_count'] = self.df['zone4_1_count'].shift(1).fillna(0)
+        self.df['zone4_2_count'] = self.df['zone4_2_count'].shift(1).fillna(0)
+        self.df['zone4_3_count'] = self.df['zone4_3_count'].shift(1).fillna(0)
+        self.df['zone4_4_count'] = self.df['zone4_4_count'].shift(1).fillna(0)
+        self.df['zone4_max_omission'] = self.df['zone4_max_omission'].shift(1).fillna(0)
+        self.df['zone4_hot_zone_id'] = self.df['zone4_hot_zone_id'].shift(1).fillna(0)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,13 @@ PHASE5_ADVANCED_FEATURES = [
     # AC/跨度趋势
     'ac_ma_10', 'span_ma_10',
     # 边码/重号
-    'edge_code_count', 'repeat_from_last'
+    'edge_code_count', 'repeat_from_last',
+    # Phase 6 共现/邻号/区间增强
+    'pair_coverage_top5', 'pair_coverage_top10', 'pair_score_sum',
+    'triplet_coverage_top5', 'triplet_coverage_top10', 'triplet_score_sum',
+    'neighbor_hit_count', 'neighbor_hit_ratio',
+    'zone4_1_count', 'zone4_2_count', 'zone4_3_count', 'zone4_4_count',
+    'zone4_max_omission', 'zone4_hot_zone_id'
 ]
 
 def get_all_features():
