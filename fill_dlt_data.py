@@ -320,60 +320,25 @@ def fill_missing_data():
                     total_added += saved
                     print(f"  回补 {prev_p + 1}~{next_p - 1} 段: 新增 {saved} 期")
 
-        records = scrape_dlt_range(batch_start, batch_end)
-        sleep_interval()
-        if records:
+        # 主拉取：从 batch_start（最新期+1 或去年年初）起，按"年"整段请求
+        # （start=YY001, end=YY999），替代逐页 +50 翻页——空库补 2 年历史从
+        # ~24 次请求降到 2 次（与双色球按年区间做法一致）。按年 while 有上界
+        # （最多当年），天然不会死循环；未开奖的预览期由 _save_records 未来守卫排除。
+        cur_yy = datetime.now().year % 100
+        pull_yy = batch_start // 1000
+        while pull_yy <= cur_yy:
+            block_start = batch_start if batch_start // 1000 == pull_yy else pull_yy * 1000 + 1
+            block_end = pull_yy * 1000 + 999
+            print(f"\n  拉取 {pull_yy} 年数据（{block_start}~{block_end}）...")
+            records = scrape_dlt_range(block_start, block_end)
+            sleep_interval()
+            if not records:
+                break
             saved = _save_records(records)
             total_added += saved
-            print(f"  新增 {saved} 期数据")
-
-            # 继续向后翻页。必须同时限制页数并要求期号推进：
-            # 若接口忽略区间参数恒返回最新 50 条，旧写法会陷入无间隔的死循环打站。
-            for _ in range(MAX_PAGES):
-                if len(records) < 50:
-                    break
-                new_start = int(records[-1]['period']) + 1
-                if new_start <= batch_start:
-                    print("  ⚠️ 期号未推进，停止翻页（接口可能忽略了区间参数）")
-                    break
-                batch_start = new_start
-                batch_end = batch_start + 50
-                records = scrape_dlt_range(batch_start, batch_end)
-                sleep_interval()
-                if not records:
-                    break
-                saved = _save_records(records)
-                total_added += saved
-                print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
-
-        # 跨年续爬：大乐透期号按年重置（如 ...25150 → 26001），区间接口从 25151 起会返回空，
-        # 导致今年数据补不上。补完去年后，若最新期仍停在去年，则从今年年初继续爬一轮。
-        cur_yy = datetime.now().year % 100
-        last_period = int(conn.execute(
-            "SELECT MAX(CAST(period AS INTEGER)) FROM lottery_records WHERE lottery_type='dlt'"
-        ).fetchone()[0] or 0)
-        if last_period and (last_period // 1000) < cur_yy:
-            batch_start = cur_yy * 1000 + 1  # 今年年初，如 26001
-            batch_end = batch_start + 50
-            print(f"\n  跨年续爬 {cur_yy} 年数据（从 {batch_start} 起）...")
-            records = scrape_dlt_range(batch_start, batch_end)
-            sleep_interval()
-            for _ in range(MAX_PAGES):
-                if not records:
-                    break
-                saved = _save_records(records)
-                total_added += saved
-                print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
-                if len(records) < 50:
-                    break
-                new_start = int(records[-1]['period']) + 1
-                if new_start <= batch_start:
-                    print("  ⚠️ 期号未推进，停止翻页")
-                    break
-                batch_start = new_start
-                batch_end = batch_start + 50
-                records = scrape_dlt_range(batch_start, batch_end)
-                sleep_interval()
+            print(f"  {pull_yy} 年: 解析 {len(records)} 期, 新增 {saved} 期 (至 {records[-1]['period']})")
+            pull_yy += 1
+            batch_start = pull_yy * 1000 + 1
 
     # 打印补全后状态
     new_status = get_db_status()

@@ -177,4 +177,6 @@ lottery.db
 # 开发过程截图（replit 遗留），非源代码
 attached_assets/
 # 日志文件
+.push_state.json
+
 logs/

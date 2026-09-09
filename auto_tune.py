@@ -157,7 +157,12 @@ def tune(trials=DEFAULT_TRIALS, lottery_type='dlt', backtest_n=20):
         print(f"  {k:24s} = {v!r}")
 
     # 用独立窗口评估泛化能力（缓解同窗口既选参又打分的过拟合）
-    evaluate_generalization(study, lottery_type=lottery_type, backtest_n=backtest_n)
+    gen_score = evaluate_generalization(study, lottery_type=lottery_type, backtest_n=backtest_n)
+    # 挂到 study 上，由调用方(CLI)保存时统一写入，避免 tune 内部重复写文件
+    try:
+        study.set_user_attr('holdout_score', gen_score)
+    except Exception:
+        pass
 
     return study
 
@@ -216,11 +221,13 @@ def _progress_callback(study, trial):
         print(f"  ⏳ 已完成 {trial.number}/{n_trials} 试验, 当前最佳: {study.best_value:.4f}")
 
 
-def save_best_params(study, lottery_type='dlt'):
+def save_best_params(study, lottery_type='dlt', holdout_score=None):
     """将最佳参数保存到 models/best_params.json
 
     说明: 仅写入 JSON 产物，不修改 core.py 源码。运行时由
     apply_best_params() 读取该 JSON 覆盖 core.SCORE_PARAMS。
+    holdout_score: 独立留出窗口的泛化评分（若有）。调参窗口 validation 分
+    存在乐观偏差，报告时以 holdout 分为最终泛化参考。
     """
     from pattern_learner.core import SCORE_PARAMS
 
@@ -242,6 +249,7 @@ def save_best_params(study, lottery_type='dlt'):
     existing[lottery_type] = {
         'params': best_params,
         'best_score': study.best_trial.value,
+        'holdout_score': holdout_score,
         'timestamp': datetime.now().isoformat(),
     }
 
@@ -249,6 +257,10 @@ def save_best_params(study, lottery_type='dlt'):
         json.dump(existing, f, indent=2, ensure_ascii=False)
 
     print(f"\n✅ 最佳参数已保存到 {save_path}")
+    if holdout_score is not None:
+        print(f"   留出集泛化评分: {holdout_score:.4f} (validation: {study.best_trial.value:.4f})")
+        if holdout_score < study.best_trial.value:
+            print(f"   ⚠️ 泛化评分低于调参窗口，参数存在过拟合，谨慎采用")
     return best_params
 
 
@@ -373,4 +385,9 @@ if __name__ == '__main__':
     )
 
     if args.save:
-        save_best_params(study, lottery_type=args.type)
+        gen = None
+        try:
+            gen = study.user_attrs.get('holdout_score')
+        except Exception:
+            pass
+        save_best_params(study, lottery_type=args.type, holdout_score=gen)

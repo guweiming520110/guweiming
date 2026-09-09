@@ -294,13 +294,19 @@ class FeatureEngineer:
             'cold_back': cold_back
         }
 
-    def add_cooccurrence_features(self):
-        # 防数据泄漏：原实现先用【全量数据(含未来期)】统计 pair/triplet 频率，
-        # 再用【本期开奖号码】去查询，既泄漏未来又泄漏本期(预测目标)。
-        # 改为按期增量累计：计算第 idx 行时，频率字典只包含 0..idx-1 期(严格历史)，
-        # 计算完成后再把本期号码计入字典供后续期使用；最终再整体下移一期，
-        # 使第 idx 行仅携带 idx 之前已知的信息。
-        # 性能优化：KL8 每期20个号码，triplet 组合 C(20,3)=1140 过于昂贵，跳过 triplet 计算
+    def _ensure_cooc_cache(self):
+        """联合计算共现特征（只遍历一次，供两个方法共享）。
+
+        保持原 add_cooccurrence_features / add_enhanced_cooccurrence_features
+        的逐期语义完全一致：每行用「截止上一期」的累计字典计算特征，再累计本期。
+        删去两方法各自重复的全量累计（原为 O(2n·C(k,3))）。
+        KL8：共现方法跳过 triplet（原逻辑）；增强方法也跳过 triplet——审计建议，
+        KL8 每期 C(20,3)=1140 且对全量 8 万项 counter 每期 most_common 排序是最
+        大热点；故 KL8 的 3 个 triplet_* 列恒为 0（需重训 KL8 特征）。
+        """
+        if getattr(self, '_cooc_cache', None) is not None:
+            return self._cooc_cache
+
         compute_triplets = self.lottery_type != 'kl8'
         pair_counts = Counter()
         triplet_counts = Counter()
@@ -308,74 +314,103 @@ class FeatureEngineer:
         seen_draws = 0              # 已计入的历史期数
         seen_number_slots = 0       # 已计入的号码总槽位数（用于概率归一化）
 
-        pair_scores = []
-        triplet_scores = []
-        pmi_scores = []
+        max_pair_freq_l, max_triplet_freq_l, pmi_score_l = [], [], []
+        pair_cov5_l, pair_cov10_l, pair_score_l = [], [], []
+        tri_cov5_l, tri_cov10_l, tri_score_l = [], [], []
 
-        for idx, row in self.df.iterrows():
-            if self.lottery_type == 'kl8':
-                nums = row.get('num_list', [])
-                if isinstance(nums, str):
-                    nums = [int(x) for x in nums.split(',') if x.strip()]
-                nums = sorted(nums)
-            else:
-                nums = sorted([row[col] for col in self.front_cols])
+        for _, row in self.df.iterrows():
+            nums = self._get_current_nums(row)
+            num_set = set(nums)
+            n = len(nums)
 
-            # ---- 用截止 idx-1 的历史频率计算本期分数（此处仍会用到本期号码做查询，
-            #      截止当期(info≤t)的分数，直接用作特征（训练侧标签 shift(-1) 防泄漏）----
-            max_pair_freq = 0
-            for i in range(len(nums)):
-                for j in range(i+1, len(nums)):
-                    pair = (nums[i], nums[j])
-                    if pair in pair_counts:
-                        max_pair_freq = max(max_pair_freq, pair_counts[pair])
-
-            max_triplet_freq = 0
+            # ---- cooccurrence：用截止上期字典算本期分数 ----
+            mpf = mtx = mpmi = 0
+            for i in range(n):
+                for j in range(i + 1, n):
+                    c = pair_counts.get((nums[i], nums[j]), 0)
+                    if c > mpf:
+                        mpf = c
             if compute_triplets:
-                for i in range(len(nums)):
-                    for j in range(i+1, len(nums)):
-                        for k in range(j+1, len(nums)):
-                            triplet = (nums[i], nums[j], nums[k])
-                            if triplet in triplet_counts:
-                                max_triplet_freq = max(max_triplet_freq, triplet_counts[triplet])
-
-            max_pmi = 0
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        for k in range(j + 1, n):
+                            c = triplet_counts.get((nums[i], nums[j], nums[k]), 0)
+                            if c > mtx:
+                                mtx = c
             if seen_draws > 0 and seen_number_slots > 0:
-                for i in range(len(nums)):
-                    for j in range(i+1, len(nums)):
+                for i in range(n):
+                    for j in range(i + 1, n):
                         pair = (nums[i], nums[j])
-                        if pair in pair_counts:
-                            p_xy = pair_counts[pair] / seen_draws
+                        c = pair_counts.get(pair, 0)
+                        if c > 0:
+                            p_xy = c / seen_draws
                             p_x = front_freq.get(nums[i], 0) / seen_number_slots
                             p_y = front_freq.get(nums[j], 0) / seen_number_slots
                             if p_xy > 0 and p_x > 0 and p_y > 0:
                                 pmi = np.log2(p_xy / (p_x * p_y))
-                                max_pmi = max(max_pmi, pmi)
+                                if pmi > mpmi:
+                                    mpmi = pmi
 
-            pair_scores.append(max_pair_freq)
-            triplet_scores.append(max_triplet_freq)
-            pmi_scores.append(max_pmi)
+            # ---- enhanced：历史 TOP 共现对/三连号覆盖度与得分 ----
+            top5 = pair_counts.most_common(5)
+            top10 = pair_counts.most_common(10)
+            pair_cov5_l.append(sum(1 for p, _ in top5 if p[0] in num_set and p[1] in num_set))
+            pair_cov10_l.append(sum(1 for p, _ in top10 if p[0] in num_set and p[1] in num_set))
+            pair_score_l.append(sum(pair_counts.get((nums[i], nums[j]), 0)
+                                    for i in range(n) for j in range(i + 1, n)))
+            if compute_triplets:
+                t5 = triplet_counts.most_common(5)
+                t10 = triplet_counts.most_common(10)
+                tri_cov5_l.append(sum(1 for t, _ in t5
+                                      if t[0] in num_set and t[1] in num_set and t[2] in num_set))
+                tri_cov10_l.append(sum(1 for t, _ in t10
+                                       if t[0] in num_set and t[1] in num_set and t[2] in num_set))
+                tri_score_l.append(sum(triplet_counts.get((nums[i], nums[j], nums[k]), 0)
+                                       for i in range(n) for j in range(i + 1, n)
+                                       for k in range(j + 1, n)))
+            else:
+                tri_cov5_l.append(0)
+                tri_cov10_l.append(0)
+                tri_score_l.append(0)
 
-            # ---- 计算完成后，把本期号码累计进频率字典，供后续期使用 ----
-            for i in range(len(nums)):
-                for j in range(i+1, len(nums)):
+            max_pair_freq_l.append(mpf)
+            max_triplet_freq_l.append(mtx)
+            pmi_score_l.append(mpmi)
+
+            # ---- 累计本期到历史字典（供后续期使用） ----
+            for i in range(n):
+                for j in range(i + 1, n):
                     pair_counts[(nums[i], nums[j])] += 1
             if compute_triplets:
-                for i in range(len(nums)):
-                    for j in range(i+1, len(nums)):
-                        for k in range(j+1, len(nums)):
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        for k in range(j + 1, n):
                             triplet_counts[(nums[i], nums[j], nums[k])] += 1
             for num in nums:
                 front_freq[num] += 1
             seen_draws += 1
-            seen_number_slots += len(nums)
+            seen_number_slots += n
 
-        self.df['max_pair_freq'] = pair_scores
-        self.df['max_triplet_freq'] = triplet_scores
-        self.df['pmi_score'] = pmi_scores
+        self._cooc_cache = {
+            'max_pair_freq': max_pair_freq_l,
+            'max_triplet_freq': max_triplet_freq_l,
+            'pmi_score': pmi_score_l,
+            'pair_cov5': pair_cov5_l,
+            'pair_cov10': pair_cov10_l,
+            'pair_score': pair_score_l,
+            'tri_cov5': tri_cov5_l,
+            'tri_cov10': tri_cov10_l,
+            'tri_score': tri_score_l,
+        }
+        return self._cooc_cache
 
-        # 防数据泄漏：上述分数仍用本期开奖号码做查询，整体下移一期，
-        # 使第 idx 行的分数完全由 idx 之前的历史与号码得出。
+    def add_cooccurrence_features(self):
+        # 防数据泄漏：联合缓存中每行均用「截止上一期」的累计字典计算（见 _ensure_cooc_cache），
+        # 使第 idx 行仅携带 idx 之前已知的信息；训练侧标签 shift(-1) 对齐下一期。
+        c = self._ensure_cooc_cache()
+        self.df['max_pair_freq'] = c['max_pair_freq']
+        self.df['max_triplet_freq'] = c['max_triplet_freq']
+        self.df['pmi_score'] = c['pmi_score']
 
     def add_temporal_features(self):
         date_col = 'date' if 'date' in self.df.columns else 'draw_date'
@@ -939,65 +974,16 @@ class FeatureEngineer:
 
     def add_enhanced_cooccurrence_features(self):
         """
-        增强共现特征：统计历史TOP共现对/三连号在本期号码中的覆盖度与得分和。
-        仅使用严格历史累计的 pair/triplet 频率，计算完成后再整体下移一期防泄漏。
+        增强共现特征：从共享缓存读取历史 TOP 共现对/三连号覆盖度与得分和
+        （逐期联合计算见 _ensure_cooc_cache；KL8 跳过 triplet，相关列恒 0）。
         """
-        pair_counts = Counter()
-        triplet_counts = Counter()
-
-        pair_cov5 = []
-        pair_cov10 = []
-        pair_score_sum = []
-        triplet_cov5 = []
-        triplet_cov10 = []
-        triplet_score_sum = []
-
-        for idx, row in self.df.iterrows():
-            nums = self._get_current_nums(row)
-            num_set = set(nums)
-
-            # 用历史TOP共现对计算覆盖度和得分
-            top_pairs = pair_counts.most_common(5)
-            top10_pairs = pair_counts.most_common(10)
-            cov5 = sum(1 for p, _ in top_pairs if p[0] in num_set and p[1] in num_set)
-            cov10 = sum(1 for p, _ in top10_pairs if p[0] in num_set and p[1] in num_set)
-            score = sum(pair_counts.get((nums[i], nums[j]), 0)
-                        for i in range(len(nums)) for j in range(i + 1, len(nums)))
-
-            pair_cov5.append(cov5)
-            pair_cov10.append(cov10)
-            pair_score_sum.append(score)
-
-            # 三连号
-            top_triplets = triplet_counts.most_common(5)
-            top10_triplets = triplet_counts.most_common(10)
-            tcov5 = sum(1 for t, _ in top_triplets
-                        if t[0] in num_set and t[1] in num_set and t[2] in num_set)
-            tcov10 = sum(1 for t, _ in top10_triplets
-                         if t[0] in num_set and t[1] in num_set and t[2] in num_set)
-            tscore = sum(triplet_counts.get((nums[i], nums[j], nums[k]), 0)
-                         for i in range(len(nums))
-                         for j in range(i + 1, len(nums))
-                         for k in range(j + 1, len(nums)))
-
-            triplet_cov5.append(tcov5)
-            triplet_cov10.append(tcov10)
-            triplet_score_sum.append(tscore)
-
-            # 累计本期共现关系到历史字典（供后续期使用）
-            for i in range(len(nums)):
-                for j in range(i + 1, len(nums)):
-                    pair_counts[(nums[i], nums[j])] += 1
-                for j in range(i + 1, len(nums)):
-                    for k in range(j + 1, len(nums)):
-                        triplet_counts[(nums[i], nums[j], nums[k])] += 1
-
-        self.df['pair_coverage_top5'] = pair_cov5
-        self.df['pair_coverage_top10'] = pair_cov10
-        self.df['pair_score_sum'] = pair_score_sum
-        self.df['triplet_coverage_top5'] = triplet_cov5
-        self.df['triplet_coverage_top10'] = triplet_cov10
-        self.df['triplet_score_sum'] = triplet_score_sum
+        c = self._ensure_cooc_cache()
+        self.df['pair_coverage_top5'] = c['pair_cov5']
+        self.df['pair_coverage_top10'] = c['pair_cov10']
+        self.df['pair_score_sum'] = c['pair_score']
+        self.df['triplet_coverage_top5'] = c['tri_cov5']
+        self.df['triplet_coverage_top10'] = c['tri_cov10']
+        self.df['triplet_score_sum'] = c['tri_score']
 
     def add_neighbor_features(self):
         """

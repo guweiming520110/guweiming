@@ -131,10 +131,13 @@ def _extract_date(cells):
     return ''
 
 
-def _parse_from_tbody(tbody):
-    """从 tbody id="tdata" 解析（2026年网站结构）"""
+def _parse_by_rows(rows):
+    """统一的 BS4 行解析（tbody 与 table 共用，消除重复）。
+
+    规则：期号7位；号码按列索引=号码；H1 只认 chartBall01；
+    H2 数量必须恰好 20，畸形行整行拒收；日期从行尾列提取。
+    """
     records = []
-    rows = tbody.find_all('tr')
     for row in rows:
         cells = row.find_all('td')
         if len(cells) < 5:
@@ -173,6 +176,11 @@ def _parse_from_tbody(tbody):
         })
 
     return records if records else None
+
+
+def _parse_from_tbody(tbody):
+    """从 tbody id="tdata" 解析（2026年网站结构）"""
+    return _parse_by_rows(tbody.find_all('tr'))
 
 
 def _parse_from_text(html):
@@ -228,44 +236,8 @@ def _parse_from_text(html):
 
 
 def _parse_from_table(table):
-    """从BeautifulSoup Table对象解析"""
-    records = []
-    rows = table.find_all('tr')
-    for row in rows:
-        cells = row.find_all('td')
-        if len(cells) < 5:
-            continue
-        # 首列期号
-        period_td = cells[0].get_text(strip=True)
-        period_match = re.match(r'(\d{7})', period_td)
-        if not period_match:
-            continue
-        period = period_match.group(1)
-
-        numbers = []
-        for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
-            if idx > KL8_NUMS:
-                break
-            # H1: 仅 chartBall01 是真实开奖号码；chartBall02 语义未确认为非中奖态，
-            # 并入会产生每期多出几十个号码 → 截断后错误入库污染训练
-            td_class = td.get('class', [])
-            if 'chartBall01' in td_class:
-                numbers.append(idx)
-
-        # H2: 数量必须恰好等于 20，否则整行拒收——畸形行会谎报为正常数据
-        if len(numbers) != KL8_DRAWN:
-            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
-                        period, len(numbers), KL8_DRAWN)
-            continue
-        # 尝试从行末列提取日期（YYYY-MM-DD 格式）
-        date_str = _extract_date(cells)
-        records.append({
-            'period': period,
-            'date': date_str,
-            'numbers': sorted(numbers[:KL8_DRAWN])
-        })
-
-    return records if records else None
+    """从BeautifulSoup Table对象解析（复用统一行解析）"""
+    return _parse_by_rows(table.find_all('tr'))
 
 
 def scrape_from_500(num_periods=50):

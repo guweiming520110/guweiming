@@ -59,6 +59,32 @@ sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(ROOT_DIR))
 
 
+def _push_state_file():
+    """验证推送去重状态文件路径（置于子模块根，.gitignore 已忽略）"""
+    return Path(BASE_DIR) / '.push_state.json'
+
+
+def _load_push_state():
+    """读取上次各彩种推送过的验证期号，用于跨天去重"""
+    import json
+    try:
+        f = _push_state_file()
+        if f.exists():
+            return json.loads(f.read_text(encoding='utf-8'))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_push_state(state):
+    """持久化推送去重状态；写失败不影响主流程"""
+    import json
+    try:
+        _push_state_file().write_text(json.dumps(state), encoding='utf-8')
+    except Exception:
+        pass
+
+
 def step_header(num, total, icon, title):
     print(f"\n{'█' * 55}")
     print(f"  Step {num}/{total}: {icon} {title}")
@@ -268,8 +294,11 @@ def step_verify_predictions(no_notify):
         # 自动推送每个彩种最近一期验证结果（确保每次都能看到）
         # ──────────────────────────────
         if not no_notify:
+            # 跨天去重：同一彩种同一期号的验证结果只推一次，避免每轮运行重复骚扰/逼近限速
+            push_state = _load_push_state()
             print(f"\n  📤 推送各彩种最近一期验证结果...")
             for lt in ['dlt', 'ssq', 'kl8']:
+                type_names = {'dlt': '大乐透', 'ssq': '双色球', 'kl8': '快乐8'}
                 if lt in verified_pushed:
                     # 刚才已验证并推送过这一期，跳过以免重复打扰
                     continue
@@ -286,6 +315,10 @@ def step_verify_predictions(no_notify):
                     pid = row[0]
                     row_lt = row[1]  # 使用独立变量，不覆盖循环变量 lt
                     target_period = row[3]
+                    # 跨天去重：该彩种此期验证结果已推送过 → 跳过，不重复打扰
+                    if push_state.get(f'verif_{lt}') == str(target_period):
+                        print(f"    ⏭️ {type_names[lt]} 期{target_period} 验证结果已推送过，跳过")
+                        continue
                     front_str = row[5]
                     back_str = row[6]
                     front_pred = [int(x) for x in front_str.split(',') if x.strip().isdigit()]
@@ -305,7 +338,6 @@ def step_verify_predictions(no_notify):
                     front_match = set(front_pred) & set(actual_front_list)
                     back_match = set(back_pred) & set(actual_back_list)
 
-                    type_names = {'dlt': '大乐透', 'ssq': '双色球', 'kl8': '快乐8'}
                     try:
                         if row_lt == 'kl8':
                             kl8_combos = generate_kl8_combinations(front_pred)
@@ -314,14 +346,16 @@ def step_verify_predictions(no_notify):
                             ok = send_verification(row_lt, front_pred, back_pred,
                                                   front_match, back_match,
                                                   actual_front_list, actual_back_list)
+                        if ok:
+                            push_state[f'verif_{lt}'] = str(target_period)
                         print(f"    {'✅' if ok else '❌'} {type_names[lt]} 期{target_period}: {'推送成功' if ok else '推送失败'}")
                         time.sleep(1)  # 间隔1秒避免限流
                     except Exception as e:
                         traceback.print_exc()
                         print(f"    ⚠️ {type_names[lt]} 推送异常: {e}")
                 else:
-                    type_names = {'dlt': '大乐透', 'ssq': '双色球', 'kl8': '快乐8'}
                     print(f"    ⚠️ {type_names[lt]}: 没有已验证记录")
+            _save_push_state(push_state)
 
 
 
