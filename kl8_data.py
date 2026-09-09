@@ -30,10 +30,11 @@ HEADERS = HTTP_HEADERS
 
 
 def period_to_date(period):
-    """期号 YYYYNNN → 开奖日期 (快乐8每天开一期，第1期=1月1日，闰年自动处理)。
+    """期号 YYYYNNN → 近似开奖日期 (快乐8每天开一期，第1期=1月1日，闰年自动处理)。
 
-    500.com 走势图无日期列导致 date 字段全空(C4修复)，
-    官方规则确定为每日1期，可由期号精确反推；无法反推时返回 ''。
+    ⚠️ 仅作 500.com 走势图无日期列时的近似（可能偏 1-10 天：官方期号与自然日
+    并非严格每天一一对应，存在休市/编号规则差异）。推荐日期来源：官方 cwl.gov.cn
+    接口的 date 字段（fetch_kl8_cwl），以官方为准。
     """
     period = str(period).strip()
     if len(period) < 5 or not period.isdigit():
@@ -45,6 +46,42 @@ def period_to_date(period):
         return (base + timedelta(days=seq - 1)).strftime('%Y-%m-%d')
     except (ValueError, OverflowError):
         return ''
+
+
+CWL_KL8_URL = 'https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice'
+
+
+def fetch_kl8_cwl(issue_count=50):
+    """从中国福彩官方接口(cwl.gov.cn)获取快乐8开奖数据。
+
+    返回:
+        list of dict: [{'period','date','numbers'}, ...] 或 None
+
+    优点：数据日更、日期字段官方精确、JSON 结构化，替代已停更的 500.com 快乐8板块。
+    官方接口 name=kl8 的 red 字段为 20 个开奖号码(逗号分隔)。
+    """
+    try:
+        resp = get_with_retry(
+            f'{CWL_KL8_URL}?name=kl8&issueCount={issue_count}',
+            encoding='utf-8'
+        )
+        if resp is None:
+            return None
+        data = resp.json()
+    except Exception as e:
+        log.warning("官方快乐8接口请求失败: %s", e)
+        return None
+
+    rows = (data or {}).get('result') or []
+    records = []
+    for row in rows:
+        code = str(row.get('code', '')).strip()
+        date = str(row.get('date', '')).strip()
+        red = str(row.get('red', '') or '')
+        nums = [int(x) for x in red.split(',') if x.strip().isdigit()]
+        if len(code) >= 7 and len(nums) == KL8_DRAWN:
+            records.append({'period': code, 'date': date[:10], 'numbers': sorted(nums)})
+    return records if records else None
 
 
 def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
@@ -287,7 +324,10 @@ def save_to_db(records):
                     except ValueError:
                         pass
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
+                    """INSERT INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)
+                       ON CONFLICT(period) DO UPDATE SET
+                         date=excluded.date, numbers=excluded.numbers
+                       WHERE excluded.date <> ''""",
                     (r['period'], date_str, numbers_str)
                 )
                 # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
@@ -364,8 +404,8 @@ def ensure_kl8_data(num_periods=50, force_refresh=False):
             print(f"  从数据库加载 {len(df)} 期快乐8数据 (无日期信息，跳过新鲜度检查)")
             return df
 
-    # 从500.com爬取真实数据
-    records = scrape_from_500(num_periods)
+    # 首选官方数据源(cwl.gov.cn，日更+日期精确)；失败时回退 500.com 走势图
+    records = fetch_kl8_cwl(num_periods) or scrape_from_500(num_periods)
 
     if not records:
         print("  ❌ 无法从500.com获取数据，请检查网络连接")
