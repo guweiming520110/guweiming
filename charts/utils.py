@@ -8,9 +8,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.patches import Circle
+try:  # Python 3.10+ 类型语法；旧解释器(tensorflow 环境 3.9)降级为 tuple 任意类
+    from typing import Union as _Union
+    _EDGE_T = _Union[str, tuple]
+except ImportError:
+    _EDGE_T = None
 
 
-def draw_number_ball(ax, x, y, number, facecolor, edgecolor: str | tuple = 'white',
+def draw_number_ball(ax, x, y, number, facecolor, edgecolor='white',
                      radius=0.38, fontsize=9, alpha=1.0, zorder=5):
     """绘制号码圆球"""
     circle = Circle((x, y), radius, facecolor=facecolor, edgecolor=edgecolor,

@@ -26,11 +26,14 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-# 从项目根目录加载 .env 环境变量（覆盖系统已有变量）
-from dotenv import load_dotenv
-_env_path = Path(__file__).resolve().parent.parent / '.env'
-if _env_path.exists():
-    load_dotenv(dotenv_path=str(_env_path), override=True)
+# 从项目根目录加载 .env 环境变量（覆盖系统已有变量）；未装 python-dotenv 时静默降级
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).resolve().parent.parent / '.env'
+    if _env_path.exists():
+        load_dotenv(dotenv_path=str(_env_path), override=True)
+except ImportError:
+    pass
 
 from lottery_types import next_period, get_config
 from notifier import (

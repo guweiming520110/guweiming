@@ -321,40 +321,41 @@ class LotteryPredictor:
 
         front_proba_dict = {}
         back_proba_dict = {}
+        # 修复概率融合偏差：旧实现 np.mean(list) 对每个号码"被覆盖的模型数"直接平均，
+        # 被越多位置模型覆盖的号码稀释越重、权重未归一。改为加权均值：
+        # score = Σ(prob_i * weight_i) / Σ(weight_i)，缺失模型不参与分子分母。
+        front_wsum = {}
+        back_wsum = {}
 
         for model in self.rf_models_front:
             pred_proba = model.predict_proba(latest_features)[0]
             for cls, prob in zip(model.classes_, pred_proba):
                 num = int(cls)
-                if num not in front_proba_dict:
-                    front_proba_dict[num] = []
-                front_proba_dict[num].append(prob * rf_weight)
+                front_proba_dict.setdefault(num, []).append(prob * rf_weight)
+                front_wsum[num] = front_wsum.get(num, 0) + rf_weight
 
         for idx, model in enumerate(self.xgb_models_front):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_front[idx]
             for cls_idx, prob in enumerate(pred_proba):
                 num = int(le.inverse_transform([cls_idx])[0])
-                if num not in front_proba_dict:
-                    front_proba_dict[num] = []
-                front_proba_dict[num].append(prob * xgb_weight)
+                front_proba_dict.setdefault(num, []).append(prob * xgb_weight)
+                front_wsum[num] = front_wsum.get(num, 0) + xgb_weight
 
         for model in self.rf_models_back:
             pred_proba = model.predict_proba(latest_features)[0]
             for cls, prob in zip(model.classes_, pred_proba):
                 num = int(cls)
-                if num not in back_proba_dict:
-                    back_proba_dict[num] = []
-                back_proba_dict[num].append(prob * rf_weight)
+                back_proba_dict.setdefault(num, []).append(prob * rf_weight)
+                back_wsum[num] = back_wsum.get(num, 0) + rf_weight
 
         for idx, model in enumerate(self.xgb_models_back):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_back[idx]
             for cls_idx, prob in enumerate(pred_proba):
                 num = int(le.inverse_transform([cls_idx])[0])
-                if num not in back_proba_dict:
-                    back_proba_dict[num] = []
-                back_proba_dict[num].append(prob * xgb_weight)
+                back_proba_dict.setdefault(num, []).append(prob * xgb_weight)
+                back_wsum[num] = back_wsum.get(num, 0) + xgb_weight
 
         if dl_active:
             assert self.dl_predictor is not None
@@ -362,32 +363,28 @@ class LotteryPredictor:
                 dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
 
                 for num, prob in dl_probs['front_lstm'].items():
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob * self.lstm_weight)
+                    front_proba_dict.setdefault(num, []).append(prob * self.lstm_weight)
+                    front_wsum[num] = front_wsum.get(num, 0) + self.lstm_weight
 
                 for num, prob in dl_probs['front_transformer'].items():
-                    if num not in front_proba_dict:
-                        front_proba_dict[num] = []
-                    front_proba_dict[num].append(prob * self.transformer_weight)
+                    front_proba_dict.setdefault(num, []).append(prob * self.transformer_weight)
+                    front_wsum[num] = front_wsum.get(num, 0) + self.transformer_weight
 
                 for num, prob in dl_probs['back_lstm'].items():
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob * self.lstm_weight)
+                    back_proba_dict.setdefault(num, []).append(prob * self.lstm_weight)
+                    back_wsum[num] = back_wsum.get(num, 0) + self.lstm_weight
 
                 for num, prob in dl_probs['back_transformer'].items():
-                    if num not in back_proba_dict:
-                        back_proba_dict[num] = []
-                    back_proba_dict[num].append(prob * self.transformer_weight)
+                    back_proba_dict.setdefault(num, []).append(prob * self.transformer_weight)
+                    back_wsum[num] = back_wsum.get(num, 0) + self.transformer_weight
             except Exception as e:
                 print(f"⚠️  深度学习预测失败: {e}")
 
         for num in front_proba_dict:
-            front_proba_dict[num] = np.mean(front_proba_dict[num])
-        
+            front_proba_dict[num] = sum(front_proba_dict[num]) / max(front_wsum.get(num, 0), 1e-9)
+
         for num in back_proba_dict:
-            back_proba_dict[num] = np.mean(back_proba_dict[num])
+            back_proba_dict[num] = sum(back_proba_dict[num]) / max(back_wsum.get(num, 0), 1e-9)
         
         sorted_front = sorted(front_proba_dict.items(), key=lambda x: x[1], reverse=True)
         sorted_back = sorted(back_proba_dict.items(), key=lambda x: x[1], reverse=True)

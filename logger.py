@@ -41,7 +41,7 @@ def setup_logger(name='lottery', level=logging.INFO):
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
-    fmt = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s', '%H:%M:%S')
+    fmt = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s', '%m-%d %H:%M:%S')
 
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(level)

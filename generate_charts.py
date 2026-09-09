@@ -167,6 +167,30 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
             except Exception as e:
                 print(f"  ⚠️ 加载预测记录失败: {e}")
 
+        # 显式 --predict-front 时未走上方 DB 加载路径，target_period 可能为 None，
+        # 导致验证被"目标期尚未开奖"静默跳过。这里推测目标期：
+        #  1) 优先匹配 prediction_records 中相同号码的历史预测 → 用其 target_period 精确验证；
+        #  2) 无匹配 → 以最新已开奖期作为验证目标（用户显式给号码通常就是验证最新一期）。
+        if verify and predict_front is not None and target_period is None and len(df) > 0:
+            try:
+                front_str = ','.join(str(n) for n in predict_front)
+                with get_connection(commit=False) as conn_v:
+                    row_v = conn_v.execute(
+                        """SELECT target_period FROM prediction_records
+                           WHERE lottery_type=? AND front_numbers = ?
+                           ORDER BY id DESC LIMIT 1""",
+                        (lottery_type, front_str)
+                    ).fetchone()
+                if row_v:
+                    target_period = row_v[0]
+                    print(f"  📋 显式预测号码匹配历史预测记录，确定验证期 {target_period}")
+                else:
+                    target_period = str(df.iloc[-1]['period'])
+                    print(f"  📋 显式预测号码未匹配历史记录，以最新开奖期 {target_period} 验证")
+            except Exception as e:
+                target_period = str(df.iloc[-1]['period'])
+                print(f"  ⚠️ 推测目标期失败，回退最新开奖期 {target_period}: {e}")
+
         # 验证模式：检查预测命中，并保存验证结果到数据库
         verified_front_set = None  # None=未验证, set()=已验证无命中, {1,2}=已验证有命中
         if verify and predict_front and len(df) > 0:
@@ -284,6 +308,30 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                         print(f"  📋 从数据库加载已验证预测(期{target_period}): 前区{predict_front} 后区{predict_back}")
             except Exception as e:
                 print(f"  ⚠️ 加载预测记录失败: {e}")
+
+        # 显式 --predict-front 时未走上方 DB 加载路径，target_period 可能为 None，
+        # 导致验证被"目标期尚未开奖"静默跳过。推测目标期（同 kl8 分支）：
+        #  1) 匹配 prediction_records 中相同号码的历史预测 → 用其 target_period 精确验证；
+        #  2) 无匹配 → 以最新已开奖期作为验证目标。
+        if verify and predict_front is not None and target_period is None and len(df) > 0:
+            try:
+                front_str = ','.join(str(n) for n in predict_front)
+                with get_connection(commit=False) as conn_v:
+                    row_v = conn_v.execute(
+                        """SELECT target_period FROM prediction_records
+                           WHERE lottery_type=? AND front_numbers = ?
+                           ORDER BY id DESC LIMIT 1""",
+                        (lottery_type, front_str)
+                    ).fetchone()
+                if row_v:
+                    target_period = row_v[0]
+                    print(f"  📋 显式预测号码匹配历史预测记录，确定验证期 {target_period}")
+                else:
+                    target_period = str(df.iloc[-1]['period'])
+                    print(f"  📋 显式预测号码未匹配历史记录，以最新开奖期 {target_period} 验证")
+            except Exception as e:
+                target_period = str(df.iloc[-1]['period'])
+                print(f"  ⚠️ 推测目标期失败，回退最新开奖期 {target_period}: {e}")
 
         # 验证模式：检查预测命中
         verified_front_set, verified_back_set = None, None  # None=未验证
