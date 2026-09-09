@@ -570,7 +570,8 @@ def main():
     # ──────────────────────────────
     print(f"\n{'█' * 55}")
     print(f"  ✅ 一键全自动运行完成!")
-    print(f"  📂 走势图: {BASE_DIR / 'charts'}")
+    print(f"  📂 走势图输出目录: {ROOT_DIR / 'output'}")
+    print(f"    (config.OUTPUT_DIR，与 .py 源码分离)")
     print(f"{'█' * 55}")
 
     # 统计
