@@ -371,8 +371,6 @@ if __name__ == '__main__':
     if not args.pending and not args.report:
         try:
             from notifier import get_pending_verifications, save_verification, send_verification
-            import sqlite3
-            from pathlib import Path
 
             pending = get_pending_verifications()
             my_pending = [p for p in pending if p['lottery_type'] == lottery_type]

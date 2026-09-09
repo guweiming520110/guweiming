@@ -1071,14 +1071,9 @@ class FeatureEngineer:
 
 
 if __name__ == "__main__":
-    import sqlite3
-    from pathlib import Path
-    BASE_DIR = Path(__file__).resolve().parent
-    ROOT_DIR = BASE_DIR.parent
-    DB_PATH = ROOT_DIR / 'lottery.db'
-    conn = sqlite3.connect(str(DB_PATH))
-    df = pd.read_sql("SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn)
-    conn.close()
+    from db_utils import get_connection
+    with get_connection(commit=False) as conn:
+        df = pd.read_sql("SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn)
     if not df.empty:
         fe = FeatureEngineer(df)
         df_features = fe.extract_all_features()

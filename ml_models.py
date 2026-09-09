@@ -76,37 +76,82 @@ class LotteryPredictor:
 
         return X
     
+    def _report_validation_accuracy(self, tag, y_pred, y_true):
+        """打印单个号码位置的验证集 Top-1 准确率，返回准确率(0-1)或 None。
+
+        y_pred/y_true 长度理论上一致（同一验证段构造），防御性截断到较短者，
+        避免标签列含 NaN 被 dropna 后长度不匹配导致广播报错。
+        """
+        y_pred = np.asarray(y_pred)
+        y_true = np.asarray(y_true)
+        n = min(len(y_pred), len(y_true))
+        if n == 0:
+            print(f"  验证集{tag}: 无验证样本，跳过评估")
+            return None
+        y_pred, y_true = y_pred[:n], y_true[:n]
+        hit = int(np.sum(y_pred == y_true))
+        acc = hit / n
+        print(f"  验证集{tag} Top-1准确率: {acc * 100:.1f}% ({hit}/{n})")
+        return acc
+
     def train_random_forest(self, df):
         if len(df) < 50:
             raise ValueError(f"训练数据不足：需要至少50条数据，当前只有{len(df)}条")
 
         df = df.copy().reset_index(drop=True)
-        # C1 修复: 特征语义 = 截止当期(info≤t, 含当期开奖)；标签 = 下一期开奖(t+1)。
-        # 因此剔除最后一行特征(它没有"下一期"标签)，scaler 也只在该段上 fit。
-        feat_df = df.iloc[:-1]
-        X = self.prepare_data(feat_df)
 
-        print(f"开始训练随机森林模型，数据量: {len(feat_df)}条有效样本 (原{len(df)}条, 末行保留作推理最新特征)")
+        # H6 修复: 按时间序划分训练/验证集——最后20%(至少1条)作验证，前80%训练。
+        # df 已按 period 升序，验证段行严格晚于训练段行，特征/标签均不跨段混用。
+        n_val = max(1, int(len(df) * 0.2))
+        train_df = df.iloc[:-n_val]
+        val_df = df.iloc[-n_val:]
+
+        # C1 修复: 特征语义 = 截止当期(info≤t, 含当期开奖)；标签 = 下一期开奖(t+1)。
+        # 因此各段剔除最后一行特征(它没有"下一期"标签)。
+        feat_train_df = train_df.iloc[:-1]
+        X_train = self.prepare_data(feat_train_df)   # scaler 只 fit 训练段，防止验证信息泄漏
+
+        # 验证段复用同一 scaler，仅 transform（self.feature_cols 已由训练段 fit 时设置）
+        feat_val_df = val_df.iloc[:-1]
+        X_val = self.prepare_data(feat_val_df, fit=False)
+
+        print(f"开始训练随机森林模型，训练样本: {len(feat_train_df)}条, 验证样本: {len(feat_val_df)}条 "
+              f"(原{len(df)}条, 时间序前80%/后20%, 各段末行保留作推理最新特征)")
 
         # 训练前区模型
+        front_accs = []
         for i in range(1, self.front_count + 1):
-            y = df[f'front_{i}'].shift(-1).iloc[:-1].values
+            y = train_df[f'front_{i}'].shift(-1).iloc[:-1].values
+            y_val = val_df[f'front_{i}'].shift(-1).dropna().values
             unique_classes = np.unique(y)
             print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
 
             model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
-            model.fit(X, y)
+            model.fit(X_train, y)
             self.rf_models_front.append(model)
+            acc = self._report_validation_accuracy(f"前区{i}号", model.predict(X_val), y_val)
+            if acc is not None:
+                front_accs.append(acc)
 
         # 训练后区模型
+        back_accs = []
         for i in range(1, self.back_count + 1):
-            y = df[f'back_{i}'].shift(-1).iloc[:-1].values
+            y = train_df[f'back_{i}'].shift(-1).iloc[:-1].values
+            y_val = val_df[f'back_{i}'].shift(-1).dropna().values
             unique_classes = np.unique(y)
             print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
 
             model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
-            model.fit(X, y)
+            model.fit(X_train, y)
             self.rf_models_back.append(model)
+            acc = self._report_validation_accuracy(f"后区{i}号", model.predict(X_val), y_val)
+            if acc is not None:
+                back_accs.append(acc)
+
+        if front_accs:
+            print(f"  验证集前区平均 Top-1准确率: {np.mean(front_accs) * 100:.1f}%")
+        if back_accs:
+            print(f"  验证集后区平均 Top-1准确率: {np.mean(back_accs) * 100:.1f}%")
 
         print("✅ 随机森林模型训练完成")
 
@@ -115,15 +160,28 @@ class LotteryPredictor:
             raise ValueError(f"训练数据不足：需要至少50条数据，当前只有{len(df)}条")
 
         df = df.copy().reset_index(drop=True)
-        # C1 修复: 同 train_random_forest —— 特征 info≤t，标签下一期开奖 t+1
-        feat_df = df.iloc[:-1]
-        X = self.prepare_data(feat_df)
 
-        print(f"开始训练XGBoost模型，数据量: {len(feat_df)}条有效样本 (原{len(df)}条, 末行保留作推理最新特征)")
+        # H6 修复: 同 train_random_forest —— 时间序前80%训练/后20%验证，scaler 只 fit 训练段
+        n_val = max(1, int(len(df) * 0.2))
+        train_df = df.iloc[:-n_val]
+        val_df = df.iloc[-n_val:]
+
+        # C1 修复: 同 train_random_forest —— 特征 info≤t，标签下一期开奖 t+1
+        feat_train_df = train_df.iloc[:-1]
+        X_train = self.prepare_data(feat_train_df)   # scaler 只 fit 训练段
+
+        # 验证段复用同一 scaler，仅 transform
+        feat_val_df = val_df.iloc[:-1]
+        X_val = self.prepare_data(feat_val_df, fit=False)
+
+        print(f"开始训练XGBoost模型，训练样本: {len(feat_train_df)}条, 验证样本: {len(feat_val_df)}条 "
+              f"(原{len(df)}条, 时间序前80%/后20%, 各段末行保留作推理最新特征)")
 
         # 训练前区模型
+        front_accs = []
         for i in range(1, self.front_count + 1):
-            y = df[f'front_{i}'].shift(-1).iloc[:-1].values
+            y = train_df[f'front_{i}'].shift(-1).iloc[:-1].values
+            y_val = val_df[f'front_{i}'].shift(-1).dropna().values
             unique_classes = np.unique(y)
             print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
 
@@ -131,14 +189,22 @@ class LotteryPredictor:
             y_encoded = le.fit_transform(y)
 
             model = xgb.XGBClassifier(n_estimators=100, max_depth=6, random_state=42, eval_metric='mlogloss')
-            model.fit(X, y_encoded)
+            model.fit(X_train, y_encoded)
 
             self.xgb_models_front.append(model)
             self.label_encoders_front.append(le)
 
+            # XGB 输出编码值，需 inverse_transform 还原真实号码后计算验证准确率
+            y_pred = le.inverse_transform(model.predict(X_val))
+            acc = self._report_validation_accuracy(f"前区{i}号", y_pred, y_val)
+            if acc is not None:
+                front_accs.append(acc)
+
         # 训练后区模型
+        back_accs = []
         for i in range(1, self.back_count + 1):
-            y = df[f'back_{i}'].shift(-1).iloc[:-1].values
+            y = train_df[f'back_{i}'].shift(-1).iloc[:-1].values
+            y_val = val_df[f'back_{i}'].shift(-1).dropna().values
             unique_classes = np.unique(y)
             print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
 
@@ -146,10 +212,20 @@ class LotteryPredictor:
             y_encoded = le.fit_transform(y)
 
             model = xgb.XGBClassifier(n_estimators=100, max_depth=6, random_state=42, eval_metric='mlogloss')
-            model.fit(X, y_encoded)
+            model.fit(X_train, y_encoded)
 
             self.xgb_models_back.append(model)
             self.label_encoders_back.append(le)
+
+            y_pred = le.inverse_transform(model.predict(X_val))
+            acc = self._report_validation_accuracy(f"后区{i}号", y_pred, y_val)
+            if acc is not None:
+                back_accs.append(acc)
+
+        if front_accs:
+            print(f"  验证集前区平均 Top-1准确率: {np.mean(front_accs) * 100:.1f}%")
+        if back_accs:
+            print(f"  验证集后区平均 Top-1准确率: {np.mean(back_accs) * 100:.1f}%")
 
         print("✅ XGBoost模型训练完成")
     
@@ -549,14 +625,9 @@ class LotteryPredictor:
             self.use_deep_learning = False
 
 if __name__ == "__main__":
-    import sqlite3
     import pandas as pd
-    from pathlib import Path
+    from db_utils import get_connection
     from feature_engineering import FeatureEngineer
-
-    BASE_DIR = Path(__file__).resolve().parent
-    ROOT_DIR = BASE_DIR.parent
-    DB_PATH = ROOT_DIR / 'lottery.db'
 
     # 彩种中文名，仅用于日志展示
     TYPE_NAMES = {'dlt': '大乐透', 'ssq': '双色球'}
@@ -572,12 +643,11 @@ if __name__ == "__main__":
         print(f"开始训练{name} ({lottery_type}) 模型")
         print("=" * 60)
 
-        conn = sqlite3.connect(str(DB_PATH))
-        df = pd.read_sql(
-            "SELECT * FROM lottery_records WHERE lottery_type=? ORDER BY period",
-            conn, params=(lottery_type,)
-        )
-        conn.close()
+        with get_connection(commit=False) as conn:
+            df = pd.read_sql(
+                "SELECT * FROM lottery_records WHERE lottery_type=? ORDER BY period",
+                conn, params=(lottery_type,)
+            )
 
         if df.empty:
             print(f"❌ 没有找到{name}数据，跳过")

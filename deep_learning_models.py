@@ -150,13 +150,25 @@ class DeepLearningPredictor:
         更严重的是 validation_split 是在**打乱之后**随机抽取，等价于用
         "未来"验证"过去"，验证指标完全虚高、不可信。
         这里改为：显式 shuffle=False + 手工按时间顺序切最后 10% 作验证集。
+
+        H7 修复: 原切分训练/验证相邻(训练 X[:-val_size]，验证 X[-val_size:])，
+        验证首序列(索引 n_val2=n-val_size)的内容行 [n_val2, n_val2+seq_len-1]
+        与训练末序列(索引 n_val2-1)的内容行 [n_val2-1, n_val2+seq_len-2]
+        重叠 seq_len-1 行——等价于"验证序列首元素恰好出现在最后一条训练样本
+        的标签/窗口内"，验证指标轻微乐观。
+        现改为训练用 [0, n_val2)，验证用 [n_val2 + seq_len, n)：两段之间保留
+        seq_len 的 gap，保证验证序列的任意内容行/标签行都不与训练序列相交。
         """
         n = len(X)
+        seq_len = self.sequence_length
         val_size = int(n * 0.1) if n >= 20 else 0
-        if val_size and n - val_size >= 1:
-            X_train, y_train = X[:-val_size], y[:-val_size]
-            validation_data = (X[-val_size:], y[-val_size:])
+        n_val2 = n - val_size
+        if val_size and n_val2 >= 1 and n_val2 + seq_len < n:
+            X_train, y_train = X[:n_val2], y[:n_val2]
+            validation_data = (X[n_val2 + seq_len:], y[n_val2 + seq_len:])
         else:
+            # val_size 不足以覆盖 seq_len 的 gap 时退化为全量训练(无验证集)，
+            # 避免负分片；数据量变化最小（仅少 seq_len 个验证样本）。
             X_train, y_train = X, y
             validation_data = None
 
@@ -426,23 +438,17 @@ class DeepLearningPredictor:
 if __name__ == "__main__":
     print("🚀 开始深度学习模型训练...")
 
-    import sqlite3
     import pandas as pd
-    from pathlib import Path
+    from db_utils import get_connection
     from feature_engineering import FeatureEngineer
-    import os
-
-    BASE_DIR = Path(__file__).resolve().parent
-    ROOT_DIR = BASE_DIR.parent
-    DB_PATH = ROOT_DIR / 'lottery.db'
+    # 注意：模块顶部已 import os，此处不再重复导入
 
     # 训练大乐透
     print("📊 加载大乐透历史数据...")
-    conn = sqlite3.connect(str(DB_PATH))
-    df = pd.read_sql(
-        "SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn
-    )
-    conn.close()
+    with get_connection(commit=False) as conn:
+        df = pd.read_sql(
+            "SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn
+        )
 
     if len(df) > 20:
         print("🔧 提取特征...")
@@ -472,11 +478,10 @@ if __name__ == "__main__":
 
     # 训练双色球
     print("\n📊 加载双色球历史数据...")
-    conn = sqlite3.connect(str(DB_PATH))
-    df_ssq = pd.read_sql(
-        "SELECT * FROM lottery_records WHERE lottery_type='ssq' ORDER BY period", conn
-    )
-    conn.close()
+    with get_connection(commit=False) as conn:
+        df_ssq = pd.read_sql(
+            "SELECT * FROM lottery_records WHERE lottery_type='ssq' ORDER BY period", conn
+        )
 
     if len(df_ssq) > 20:
         print("🔧 提取特征...")

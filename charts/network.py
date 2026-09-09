@@ -5,11 +5,10 @@
 新增：支持显示历史各期预测号码对比
 """
 
-import sqlite3
-from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from db_utils import get_connection
 from charts.utils import (
     draw_number_ball, draw_connection, should_connect,
     draw_cell_box, get_ball_color, get_reason_color
@@ -20,60 +19,53 @@ from charts.config import HISTORY_BALL_COLOR
 
 def load_history_predictions(lottery_type, db_path=None):
     """从数据库加载历史预测记录"""
-    if db_path is None:
-        base_dir = Path(__file__).resolve().parent.parent.parent
-        db_path = base_dir / 'lottery.db'
-
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-
+    # db_path 参数已弃用：项目数据统一走 config.DB_PATH（get_connection 已固定），忽略该参数
     predictions = {}
     try:
-        cur.execute(
-            """SELECT target_period, front_numbers, back_numbers,
-                      actual_front, actual_back
-               FROM prediction_records
-               WHERE lottery_type = ?
-               ORDER BY target_period ASC""",
-            (lottery_type,)
-        )
+        with get_connection(commit=False) as conn:
+            cur = conn.execute(
+                """SELECT target_period, front_numbers, back_numbers,
+                          actual_front, actual_back
+                   FROM prediction_records
+                   WHERE lottery_type = ?
+                   ORDER BY target_period ASC""",
+                (lottery_type,)
+            )
 
-        for row in cur.fetchall():
-            period = row[0]
-            front_str = row[1]
-            back_str = row[2]
-            actual_front = row[3]
-            actual_back = row[4]
+            for row in cur.fetchall():
+                period = row[0]
+                front_str = row[1]
+                back_str = row[2]
+                actual_front = row[3]
+                actual_back = row[4]
 
-            front_nums = []
-            if front_str:
-                front_nums = [int(x.strip()) for x in front_str.split(',') if x.strip().isdigit()]
+                front_nums = []
+                if front_str:
+                    front_nums = [int(x.strip()) for x in front_str.split(',') if x.strip().isdigit()]
 
-            back_nums = []
-            if back_str:
-                back_nums = [int(x.strip()) for x in back_str.split(',') if x.strip().isdigit()]
+                back_nums = []
+                if back_str:
+                    back_nums = [int(x.strip()) for x in back_str.split(',') if x.strip().isdigit()]
 
-            verified = (actual_front is not None and actual_front != '')
+                verified = (actual_front is not None and actual_front != '')
 
-            actual_front_set = set()
-            actual_back_set = set()
-            if verified and actual_front:
-                actual_front_set = set(int(x.strip()) for x in actual_front.split(',') if x.strip().isdigit())
-            if verified and actual_back:
-                actual_back_set = set(int(x.strip()) for x in actual_back.split(',') if x.strip().isdigit())
+                actual_front_set = set()
+                actual_back_set = set()
+                if verified and actual_front:
+                    actual_front_set = set(int(x.strip()) for x in actual_front.split(',') if x.strip().isdigit())
+                if verified and actual_back:
+                    actual_back_set = set(int(x.strip()) for x in actual_back.split(',') if x.strip().isdigit())
 
-            predictions[period] = {
-                'front': front_nums,
-                'back': back_nums,
-                'verified': verified,
-                'actual_front': actual_front_set,
-                'actual_back': actual_back_set,
-            }
+                predictions[period] = {
+                    'front': front_nums,
+                    'back': back_nums,
+                    'verified': verified,
+                    'actual_front': actual_front_set,
+                    'actual_back': actual_back_set,
+                }
 
     except Exception as e:
         pass
-    finally:
-        conn.close()
 
     return predictions
 

@@ -12,7 +12,6 @@
   python generate_charts.py --type ssq --periods 100  # 双色球 100期
 """
 
-import sqlite3
 import pandas as pd
 import os
 import sys
@@ -24,6 +23,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
+from db_utils import get_connection
 from lottery_types import get_config, LOTTERY_TYPES
 from charts.composite import generate_composite_chart
 
@@ -51,14 +51,13 @@ except Exception:
 
 def load_data(lottery_type='dlt', db_path=None, limit=None):
     """加载指定彩种的历史数据"""
-    if db_path is None:
-        db_path = DB_PATH
+    # db_path 参数已弃用：项目数据统一走 config.DB_PATH（get_connection 已固定），忽略该参数
     cfg = get_config(lottery_type)
     data_table = cfg['data_table']
     data_type = cfg['data_type']
 
-    if not os.path.exists(str(db_path)):
-        print(f"数据库不存在: {db_path}")
+    if not os.path.exists(str(DB_PATH)):
+        print(f"数据库不存在: {DB_PATH}")
         for csv_name in ['lottery_data_dlt.csv', 'lottery_data.csv']:
             csv_path = BASE_DIR / csv_name
             if csv_path.exists():
@@ -68,16 +67,14 @@ def load_data(lottery_type='dlt', db_path=None, limit=None):
                     return df
         return None
 
-    conn = sqlite3.connect(str(db_path))
     try:
-        query = f"SELECT * FROM {data_table} WHERE lottery_type=? ORDER BY period ASC"
-        df = pd.read_sql(query, conn, params=(data_type,))
-        print(f"从数据库加载了 {len(df)} 条 {cfg['name']} 历史记录")
+        with get_connection(commit=False) as conn:
+            query = f"SELECT * FROM {data_table} WHERE lottery_type=? ORDER BY period ASC"
+            df = pd.read_sql(query, conn, params=(data_type,))
+            print(f"从数据库加载了 {len(df)} 条 {cfg['name']} 历史记录")
     except Exception as e:
         print(f"数据库查询失败: {e}")
         df = None
-    finally:
-        conn.close()
 
     if df is not None and limit and len(df) > limit:
         df = df.tail(limit).reset_index(drop=True)
@@ -86,31 +83,28 @@ def load_data(lottery_type='dlt', db_path=None, limit=None):
 
 def load_kl8_data(db_path=None, limit=None):
     """加载快乐8数据（kl8_records 表，与 lottery_records 结构不同）"""
-    if db_path is None:
-        db_path = DB_PATH
-    if not os.path.exists(str(db_path)):
+    # db_path 参数已弃用：项目数据统一走 config.DB_PATH（get_connection 已固定），忽略该参数
+    if not os.path.exists(str(DB_PATH)):
         return None
 
-    conn = sqlite3.connect(str(db_path))
     try:
-        tables = pd.read_sql(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='kl8_records'", conn
-        )
-        if len(tables) == 0:
-            conn.close()
-            return None
+        # 只读查询：commit=False 避免无谓写锁
+        with get_connection(commit=False) as conn:
+            tables = pd.read_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='kl8_records'", conn
+            )
+            if len(tables) == 0:
+                return None
 
-        df = pd.read_sql("SELECT * FROM kl8_records ORDER BY period ASC", conn)
-        if len(df) == 0:
-            conn.close()
-            return None
+            df = pd.read_sql("SELECT * FROM kl8_records ORDER BY period ASC", conn)
+            if len(df) == 0:
+                return None
 
-        all_nums = []
-        for nums_str in df['numbers']:
-            nums = [int(x) for x in str(nums_str).split(',') if x.strip().isdigit()]
-            all_nums.append(nums)
-        df['num_list'] = all_nums
-        conn.close()
+            all_nums = []
+            for nums_str in df['numbers']:
+                nums = [int(x) for x in str(nums_str).split(',') if x.strip().isdigit()]
+                all_nums.append(nums)
+            df['num_list'] = all_nums
 
         if limit and len(df) > limit:
             df = df.tail(limit).reset_index(drop=True)
@@ -118,7 +112,6 @@ def load_kl8_data(db_path=None, limit=None):
         return df
     except Exception as e:
         print(f"加载快乐8数据失败: {e}")
-        conn.close()
         return None
 
 
@@ -147,28 +140,26 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         target_period = None  # 预测对应的目标期号
         if verify and not predict_front:
             try:
-                conn_v = sqlite3.connect(str(DB_PATH))
-                cur_v = conn_v.execute(
-                    """SELECT target_period, front_numbers FROM prediction_records
-                       WHERE lottery_type='kl8' AND (actual_front IS NULL OR actual_front = '')
-                       ORDER BY id DESC LIMIT 1""",
-                )
-                row = cur_v.fetchone()
-                conn_v.close()
+                with get_connection(commit=False) as conn_v:
+                    cur_v = conn_v.execute(
+                        """SELECT target_period, front_numbers FROM prediction_records
+                           WHERE lottery_type='kl8' AND (actual_front IS NULL OR actual_front = '')
+                           ORDER BY id DESC LIMIT 1""",
+                    )
+                    row = cur_v.fetchone()
                 if row:
                     target_period = row[0]
                     predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
                     print(f"  📋 从数据库加载预测(期{target_period}): {predict_front}")
                 else:
                     # 尝试加载已验证的最近记录（重新生成验证走势图）
-                    conn_v = sqlite3.connect(str(DB_PATH))
-                    cur_v = conn_v.execute(
-                        """SELECT target_period, front_numbers FROM prediction_records
-                           WHERE lottery_type='kl8' AND actual_front != ''
-                           ORDER BY id DESC LIMIT 1""",
-                    )
-                    row = cur_v.fetchone()
-                    conn_v.close()
+                    with get_connection(commit=False) as conn_v:
+                        cur_v = conn_v.execute(
+                            """SELECT target_period, front_numbers FROM prediction_records
+                               WHERE lottery_type='kl8' AND actual_front != ''
+                               ORDER BY id DESC LIMIT 1""",
+                        )
+                        row = cur_v.fetchone()
                     if row:
                         target_period = row[0]
                         predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
@@ -261,15 +252,14 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         target_period = None  # 预测对应的目标期号（用于期号精确校验）
         if verify and not predict_front:
             try:
-                conn_v = sqlite3.connect(str(DB_PATH))
-                cur_v = conn_v.execute(
-                    """SELECT target_period, front_numbers, back_numbers FROM prediction_records
-                       WHERE lottery_type=? AND (actual_front IS NULL OR actual_front = '')
-                       ORDER BY id DESC LIMIT 1""",
-                    (lottery_type,)
-                )
-                row = cur_v.fetchone()
-                conn_v.close()
+                with get_connection(commit=False) as conn_v:
+                    cur_v = conn_v.execute(
+                        """SELECT target_period, front_numbers, back_numbers FROM prediction_records
+                           WHERE lottery_type=? AND (actual_front IS NULL OR actual_front = '')
+                           ORDER BY id DESC LIMIT 1""",
+                        (lottery_type,)
+                    )
+                    row = cur_v.fetchone()
                 if row:
                     target_period = row[0]
                     predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]
@@ -278,15 +268,14 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                     print(f"  📋 从数据库加载预测(期{target_period}): 前区{predict_front} 后区{predict_back}")
                 else:
                     # 尝试加载已验证的最近记录（重新生成验证走势图）
-                    conn_v = sqlite3.connect(str(DB_PATH))
-                    cur_v = conn_v.execute(
-                        """SELECT target_period, front_numbers, back_numbers FROM prediction_records
-                           WHERE lottery_type=? AND actual_front != ''
-                           ORDER BY id DESC LIMIT 1""",
-                        (lottery_type,)
-                    )
-                    row = cur_v.fetchone()
-                    conn_v.close()
+                    with get_connection(commit=False) as conn_v:
+                        cur_v = conn_v.execute(
+                            """SELECT target_period, front_numbers, back_numbers FROM prediction_records
+                               WHERE lottery_type=? AND actual_front != ''
+                               ORDER BY id DESC LIMIT 1""",
+                            (lottery_type,)
+                        )
+                        row = cur_v.fetchone()
                     if row:
                         target_period = row[0]
                         predict_front = [int(x) for x in row[1].split(',') if x.strip().isdigit()]

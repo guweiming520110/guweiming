@@ -156,10 +156,21 @@ def fill_ssq_data():
             这里改为仅当本次解析到合法日期时才更新已有期号。
             """
             saved = 0
+            today = datetime.now().date()
             for r in records:
                 # 数据校验：确保记录合法性
                 if not r.get('period') or not str(r['period']).strip().isdigit():
                     continue
+                # H3 未来数据守卫：每年区间请求会返回今年未开奖的预览期，
+                # 开奖日期晚于今天的一律跳过，绝不当作历史入库
+                _d = r.get('date', '') or ''
+                if _d:
+                    try:
+                        if datetime.strptime(_d, '%Y-%m-%d').date() > today:
+                            log.warning("期%s 日期(%s)晚于今天，跳过未来数据", r['period'], _d)
+                            continue
+                    except ValueError:
+                        pass
                 front = r.get('front', [])
                 if len(front) != 6 or not all(1 <= n <= 33 for n in front):
                     continue

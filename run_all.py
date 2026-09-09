@@ -21,7 +21,6 @@
 import sys
 import os
 import time
-import sqlite3
 import traceback
 import argparse
 from pathlib import Path
@@ -50,7 +49,6 @@ import fill_ssq_data
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
 
 # 确保本项目模块可导入（必须在导入本项目模块之前设置）
 # 注意：os.chdir 已移入 main()，避免 import 本模块就产生切换工作目录的副作用
@@ -70,12 +68,10 @@ TOTAL_STEPS = 5
 def step_init_db():
     """初始化数据库表结构（首次运行/空库场景必需）"""
     step_header(1, TOTAL_STEPS, '🗄️', '初始化数据库')
+    from db_utils import get_connection
     from schema import init_db
-    _init_conn = sqlite3.connect(str(DB_PATH))
-    try:
+    with get_connection() as _init_conn:
         init_db(_init_conn)
-    finally:
-        _init_conn.close()
 
 
 def step_update_data():
@@ -326,15 +322,18 @@ def step_verify_predictions(no_notify):
 
 
 
-def step_run_predictions(no_notify, data_ok=None):
+def step_run_predictions(no_notify, data_ok=None, failures=None):
     """Step 4: 运行三大彩种预测，返回 chart_configs 供走势图使用
 
     参数:
         data_ok: step_update_data() 的返回值；数据不可用的彩种会跳过预测，
                  避免用过期期号生成预测并覆盖已验证记录的后验结果
+        failures: 失败步骤清单；单个彩种预测失败/无产出时 append 描述，
+                 由 main 统一决定退出码（避免"三大彩种全失败但仍退出 0"）
     """
     step_header(4, TOTAL_STEPS, '🎯', '运行预测分析')
     data_ok = data_ok or {'dlt': True, 'ssq': True, 'kl8': True}
+    failures = failures if failures is not None else []
     cfg_dlt = get_config('dlt')
     cfg_ssq = get_config('ssq')
 
@@ -351,6 +350,7 @@ def step_run_predictions(no_notify, data_ok=None):
         else:
             print("  ⚠️ 跳过：大乐透数据不可用（上一步更新失败）")
             df = None
+            failures.append('预测: 大乐透数据不可用，已跳过')
         if df is not None:
             result = pred_mod.predict_dlt(df, num_periods=50, backtest_n=5, use_ml=True)
             if result:
@@ -370,9 +370,12 @@ def step_run_predictions(no_notify, data_ok=None):
                     save_prediction('dlt', latest_period, front_nums, back_nums)
                     ok = send_prediction('dlt', front_preds, back_preds, front_report, back_report, df, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
+            else:
+                failures.append('预测: 大乐透未产出任何预测结果')
     except Exception as e:
         print(f"  ⚠️ 大乐透预测异常: {e}")
         traceback.print_exc()
+        failures.append(f"预测: 大乐透异常: {e}")
 
     # --- 3b: 双色球 ---
     print(f"\n{'=' * 40}")
@@ -384,6 +387,7 @@ def step_run_predictions(no_notify, data_ok=None):
         else:
             print("  ⚠️ 跳过：双色球数据不可用（上一步更新失败）")
             df_ssq = None
+            failures.append('预测: 双色球数据不可用，已跳过')
         if df_ssq is not None:
             result = pred_mod.predict_ssq(df_ssq, num_periods=50, backtest_n=5)
             if result:
@@ -402,9 +406,12 @@ def step_run_predictions(no_notify, data_ok=None):
                     save_prediction('ssq', latest_period, front_nums, back_nums)
                     ok = send_prediction('ssq', front_preds, back_preds, front_report, back_report, df_ssq, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
+            else:
+                failures.append('预测: 双色球未产出任何预测结果')
     except Exception as e:
         print(f"  ⚠️ 双色球预测异常: {e}")
         traceback.print_exc()
+        failures.append(f"预测: 双色球异常: {e}")
 
     # --- 3c: 快乐8 ---
     print(f"\n{'=' * 40}")
@@ -416,6 +423,7 @@ def step_run_predictions(no_notify, data_ok=None):
         else:
             print("  ⚠️ 跳过：快乐8数据不可用（上一步更新失败）")
             df_kl8 = None
+            failures.append('预测: 快乐8数据不可用，已跳过')
         if df_kl8 is not None:
             result = pred_mod.predict_kl8(df_kl8, num_periods=30)
             if result:
@@ -431,9 +439,12 @@ def step_run_predictions(no_notify, data_ok=None):
                     save_prediction('kl8', latest_period, kl8_combos['top_20'])
                     ok = send_prediction('kl8', preds, None, report, '', df_kl8, kl8_combos, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
+            else:
+                failures.append('预测: 快乐8未产出任何预测结果')
     except Exception as e:
         print(f"  ⚠️ 快乐8预测异常: {e}")
         traceback.print_exc()
+        failures.append(f"预测: 快乐8异常: {e}")
 
     return chart_configs
 
@@ -510,7 +521,7 @@ def main():
     step_verify_predictions(no_notify)
 
     # Step 4: 运行三大彩种预测
-    chart_configs = step_run_predictions(no_notify, data_ok=data_ok)
+    chart_configs = step_run_predictions(no_notify, data_ok=data_ok, failures=failures)
     if not chart_configs:
         failures.append('预测: 未产出任何预测结果')
 

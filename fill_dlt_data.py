@@ -257,12 +257,27 @@ def fill_missing_data():
         print(f"\n  正在检查 {batch_start} 期之后的新数据...")
 
         def _save_records(records):
-            """将一批记录写入数据库，返回实际新增条数"""
+            """将一批记录写入数据库，返回实际新增条数。
+
+            多期修复：INSERT OR IGNORE 无法修复已存在的错误行，改与双色球一致的
+            条件 upsert（仅当解析到合法日期才更新已有期号，自愈年内空洞）。
+            H3：区间接口会回包含未开奖的预览期，日期晚于今天的一律跳过。
+            """
             saved = 0
+            today = datetime.now().date()
             for r in records:
                 # 数据校验：确保记录合法性
                 if not r.get('period') or not str(r['period']).strip().isdigit():
                     continue
+                # H3 未来数据守卫：开奖日期晚于今天 → 未开奖预览期，跳过
+                _d = r.get('date', '') or ''
+                if _d:
+                    try:
+                        if datetime.strptime(_d, '%Y-%m-%d').date() > today:
+                            log.warning("期%s 日期(%s)晚于今天，跳过未来数据", r['period'], _d)
+                            continue
+                    except ValueError:
+                        pass
                 front = r.get('front', [])
                 if len(front) != 5 or not all(1 <= n <= 35 for n in front):
                     continue
@@ -271,14 +286,21 @@ def fill_missing_data():
                     continue
                 try:
                     cur = conn.execute(
-                        """INSERT OR IGNORE INTO lottery_records
+                        """INSERT INTO lottery_records
                            (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, back_1, back_2)
-                           VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (r['period'], r.get('date', ''),
+                           VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(lottery_type, period) DO UPDATE SET
+                             date=excluded.date,
+                             front_1=excluded.front_1, front_2=excluded.front_2,
+                             front_3=excluded.front_3, front_4=excluded.front_4,
+                             front_5=excluded.front_5,
+                             back_1=excluded.back_1, back_2=excluded.back_2
+                           WHERE excluded.date <> ''""",
+                        (r['period'], _d,
                          front[0], front[1], front[2], front[3], front[4],
                          back[0], back[1])
                     )
-                    # rowcount 为实际插入行数，被 IGNORE 跳过时为 0
+                    # rowcount 为本次语句实际影响行数，被 WHERE 跳过时为 0
                     if cur.rowcount > 0:
                         saved += 1
                 except Exception as e:
