@@ -52,7 +52,7 @@ KL8_SHI10_PRIZE_RULES = [
     (7,  '四等奖', '中7', '80元'),
     (6,  '五等奖', '中6', '5元'),
     (5,  '六等奖', '中5', '3元'),
-    (0,  '六等奖', '中0', '2元（全不中）'),
+    (0,  '六等奖(全不中)', '中0', '2元（全不中）'),
 ]
 
 # 选十各奖级的单注固定奖金（元）；一/二等奖为浮动奖金，无法精确累加，用 None 标记
@@ -81,13 +81,21 @@ KL8_HIT_LEVELS = [
 
 # 快乐8「选十」玩法奖级映射（从预测20码中任选10码，按期望命中估算）
 # 20码命中N个 → 从中选10码的期望中奖数 ≈ N/2
-KL8_SHI_PRIZE_MAP = {
-    # 20码命中数 → 选十对应奖级参考
-    range(16, 21): ('选十中八~中十', '有望冲击大奖'),
-    range(13, 16): ('选十中六~中七', '80~8000元'),
-    range(10, 13): ('选十中五~中六', '3~5元'),
-    range(0, 10):  ('选十中五以下', '未中奖'),
-}
+# 20码命中数 → 选十对应奖级参考（按阈值降序排列）
+KL8_SHI_PRIZE_MAP = [
+    (16, '选十中八~中十', '有望冲击大奖'),
+    (13, '选十中六~中七', '80~8000元'),
+    (10, '选十中五~中六', '3~5元'),
+    (0,  '选十中五以下', '未中奖'),
+]
+
+
+def _get_kl8_shi_reference(match_count):
+    """根据命中数获取选十奖级参考"""
+    for threshold, level_name, bonus_hint in KL8_SHI_PRIZE_MAP:
+        if match_count >= threshold:
+            return f'{level_name}（{bonus_hint}）'
+    return '未中奖'
 
 
 # ==================== 奖级计算函数 ====================
@@ -279,13 +287,28 @@ def verify_kl8_combinations(combinations: dict, actual_nums: list) -> dict:
         hit_count = len(hit)
 
         # 单式（恰好10码）：直接按命中数定级
-        if len(nums) <= 10:
+        if len(nums) == 10:
             prize = get_kl8_sh10_prize(hit_count)
             return {
                 'nums': sorted(nums),
                 'hit': hit,
                 'hit_count': hit_count,
                 'prize': prize,
+            }
+
+        # 号码不足 10 码：不是一注合法的选十投注，不能套用选十奖级表
+        if len(nums) < 10:
+            return {
+                'nums': sorted(nums),
+                'hit': hit,
+                'hit_count': hit_count,
+                'prize': {
+                    'is_winning': False,
+                    'level': '',
+                    'bonus': '',
+                    'match_desc': f'号码不足10码（{len(nums)}个），非有效选十投注',
+                    'match_count': hit_count,
+                },
             }
 
         # 复式（11码=10+1 / 12码=10+2）：本质是 C(n,10) 张 10码单式的组合，
@@ -313,7 +336,9 @@ def verify_kl8_combinations(combinations: dict, actual_nums: list) -> dict:
                 has_floating = True
             else:
                 total_bonus += amount
-            lb = level_breakdown.setdefault(pz['level'], {
+            # 用 (level_name, match_count) 复合键避免同名奖级(如中5/中0)相互覆盖
+            lb_key = (pz['level'], sub_hit)
+            lb = level_breakdown.setdefault(lb_key, {
                 'count': 0,
                 'match_count': sub_hit,
                 'match_desc': pz['match_desc'],
@@ -325,6 +350,8 @@ def verify_kl8_combinations(combinations: dict, actual_nums: list) -> dict:
 
         # 组装与单式兼容的 prize 字段（含总奖金与命中明细）
         if winning_tickets > 0:
+            # winning_tickets>0 必有至少一中奖注，故 best_prize 一定已被赋值
+            assert best_prize is not None
             # 各奖级注数明细文字，按命中数从高到低
             parts = [
                 f"{v['match_desc']}×{v['count']}注"
@@ -403,11 +430,7 @@ def get_kl8_hit_level(match_count: int) -> dict:
     for threshold, stars, grade, desc in KL8_HIT_LEVELS:
         if match_count >= threshold:
             # 选十参考
-            shi_ref = '未中奖'
-            for rng, (level_name, bonus_hint) in KL8_SHI_PRIZE_MAP.items():
-                if match_count in rng:
-                    shi_ref = f'{level_name}（{bonus_hint}）'
-                    break
+            shi_ref = _get_kl8_shi_reference(match_count)
             return {
                 'stars': stars,
                 'grade': grade,
@@ -446,9 +469,35 @@ def get_prize(lottery_type: str, front_match_count: int, back_match_count: int =
     elif lottery_type == 'ssq':
         return get_ssq_prize(front_match_count, back_match_count)
     elif lottery_type == 'kl8':
-        return get_kl8_hit_level(front_match_count)
+        return get_kl8_prize(front_match_count)
     else:
         raise ValueError(f"不支持的彩种: {lottery_type}")
+
+
+def get_kl8_prize(match_count):
+    """
+    快乐8 统一奖级入口
+
+    重要：系统预测的是 20 个号码，"20 码命中 N 个"并不等于某一注选十中奖
+    （官方选十：单注 10 码中 10/9/8/7/6/5/0 才算中奖，中 1~4 不中奖）。
+    因此这里只给出"命中评价 + 选十参考"，is_winning 恒为 False；
+    真实中奖判定请用 verify_kl8_combinations() / send_kl8_verification()。
+
+    返回:
+        dict，含 level / bonus / is_winning / match_rate 等字段
+    """
+    info = get_kl8_hit_level(match_count)
+    return {
+        'level': f"{info.get('stars', '')} {info.get('grade', '')}".strip(),
+        'bonus': info.get('shi_reference', ''),
+        # 20 码命中数无法判定选十中奖，置为 False 以免推送"假中奖"
+        'is_winning': False,
+        'match_count': info.get('match_count', match_count),
+        'match_rate': info.get('match_rate', 0),
+        'stars': info.get('stars', ''),
+        'grade': info.get('grade', ''),
+        'description': info.get('description', ''),
+    }
 
 
 def get_prize_level_string(lottery_type: str, front_match_count: int,

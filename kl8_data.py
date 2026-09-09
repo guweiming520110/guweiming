@@ -6,71 +6,42 @@
 """
 
 import re
-import time
-import sqlite3
 import pandas as pd
-import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta
 
-import requests
 from bs4 import BeautifulSoup
+
+from config import DB_PATH, HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from db_utils import get_connection
+from http_utils import get_with_retry
+from logger import log
+from schema import DDL_KL8_RECORDS
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
 
 KL8_NUMS = 80
 KL8_DRAWN = 20
+# 500.com 走势图接口仅支持这几档期数，避免传入任意值构造出无效 URL
+VALID_PERIODS = (30, 50, 100)
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-}
+HEADERS = HTTP_HEADERS
 
 
-def _get_with_retry(url, max_retries=3, timeout=20):
-    """带指数退避重试的 GET 请求辅助函数。
-
-    对网络异常（超时/连接失败）与非 2xx 状态码做最多 max_retries 次重试，
-    退避间隔为 1s、2s、4s……全部失败返回 None。
-    """
-    for attempt in range(max_retries):
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        except Exception as e:
-            wait = 2 ** attempt
-            print(f"  请求失败(第{attempt + 1}/{max_retries}次): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(wait)
-    return None
+def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
+    """向后兼容包装：统一委托 http_utils.get_with_retry（指数退避重试）"""
+    return get_with_retry(url, max_retries=max_retries, timeout=timeout,
+                          encoding=HTTP_ENCODING)
 
 
 def create_kl8_table(conn=None):
-    """创建快乐8数据表"""
-    should_close = conn is None
+    """创建快乐8数据表（DDL 统一取自 schema，避免两份定义漂移）"""
     if conn is None:
-        conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS kl8_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            period TEXT NOT NULL UNIQUE,
-            date TEXT NOT NULL DEFAULT '',
-            numbers TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_kl8_period ON kl8_records(period)")
+        with get_connection() as _conn:
+            _conn.execute(DDL_KL8_RECORDS)
+        return
+    conn.execute(DDL_KL8_RECORDS)
     conn.commit()
-    if should_close:
-        conn.close()
 
 
 def fetch_kl8_html(num_periods=50):
@@ -78,13 +49,15 @@ def fetch_kl8_html(num_periods=50):
     从500彩票网获取快乐8走势图HTML
 
     参数:
-        num_periods: 30 / 50 / 100
+        num_periods: 30 / 50 / 100（其他值自动向上取到最近的合法档位）
     """
+    if num_periods not in VALID_PERIODS:
+        candidates = [p for p in VALID_PERIODS if p >= num_periods]
+        num_periods = candidates[0] if candidates else max(VALID_PERIODS)
     url = f'https://datachart.500.com/kl8?expect={num_periods}'
-    resp = _get_with_retry(url)
+    resp = get_with_retry(url, encoding=HTTP_ENCODING)
     if resp is None:
         return None
-    resp.encoding = 'gb2312'
     return resp.text
 
 
@@ -129,6 +102,16 @@ def parse_kl8_numbers(html):
     return None
 
 
+def _extract_date(cells):
+    """从td单元格列表中提取日期字符串（YYYY-MM-DD格式），找不到返回空字符串"""
+    for td in cells:
+        text = td.get_text(strip=True)
+        m = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+        if m:
+            return m.group(1)
+    return ''
+
+
 def _parse_from_tbody(tbody):
     """从 tbody id="tdata" 解析（2026年网站结构）"""
     records = []
@@ -156,11 +139,18 @@ def _parse_from_tbody(tbody):
             if 'chartBall01' in td_class or 'chartBall02' in td_class:
                 numbers.append(idx)
 
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
+        if len(numbers) < KL8_DRAWN:
+            continue
+        if len(numbers) > KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
+                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
+        # 尝试从行末列提取日期（YYYY-MM-DD 格式）
+        date_str = _extract_date(cells)
+        records.append({
+            'period': period,
+            'date': date_str,
+            'numbers': sorted(numbers[:KL8_DRAWN])
+        })
 
     return records if records else None
 
@@ -199,11 +189,19 @@ def _parse_from_text(html):
                     numbers.append(idx)
                     break
 
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
+        if len(numbers) < KL8_DRAWN:
+            continue
+        if len(numbers) > KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
+                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
+        # 该分支只有 HTML 文本、没有 td 标签对象，因此改用正则提取日期
+        _m = re.search(r'(\d{4}-\d{2}-\d{2})', row_html)
+        date_str = _m.group(1) if _m else ''
+        records.append({
+            'period': period,
+            'date': date_str,
+            'numbers': sorted(numbers[:KL8_DRAWN])
+        })
 
     return records if records else None
 
@@ -232,11 +230,18 @@ def _parse_from_table(table):
             if 'chartBall01' in td_class or 'chartBall02' in td_class:
                 numbers.append(idx)
 
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
+        if len(numbers) < KL8_DRAWN:
+            continue
+        if len(numbers) > KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
+                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
+        # 尝试从行末列提取日期（YYYY-MM-DD 格式）
+        date_str = _extract_date(cells)
+        records.append({
+            'period': period,
+            'date': date_str,
+            'numbers': sorted(numbers[:KL8_DRAWN])
+        })
 
     return records if records else None
 
@@ -257,7 +262,8 @@ def scrape_from_500(num_periods=50):
     if records:
         print(f"  成功解析 {len(records)} 期真实开奖数据")
         for r in records[:3]:
-            print(f"    期号 {r['period']}: {r['numbers'][:10]}...")
+            date_info = f" ({r.get('date', '')})" if r.get('date') else ''
+            print(f"    期号 {r['period']}{date_info}: {r['numbers'][:10]}...")
         return records
 
     return None
@@ -265,52 +271,49 @@ def scrape_from_500(num_periods=50):
 
 def save_to_db(records):
     """保存到数据库"""
-    conn = sqlite3.connect(str(DB_PATH))
-    create_kl8_table(conn)
-
     saved = 0
-    for r in records:
-        try:
-            numbers_str = ','.join(str(n) for n in r['numbers'])
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
-                (r['period'], r.get('date', ''), numbers_str)
-            )
-            # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
-            # 不能用连接级累计的 total_changes 判断
-            if cur.rowcount > 0:
-                saved += 1
-        except Exception:
-            continue
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute(DDL_KL8_RECORDS)
+        for r in records:
+            try:
+                numbers_str = ','.join(str(n) for n in r['numbers'])
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
+                    (r['period'], r.get('date', ''), numbers_str)
+                )
+                # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
+                # 不能用连接级累计的 total_changes 判断
+                if cur.rowcount > 0:
+                    saved += 1
+            except Exception as e:
+                log.warning("保存 %s 期失败: %s", r.get('period'), e)
     return saved
 
 
 def load_kl8_data(limit=None):
-    """从数据库加载快乐8数据"""
-    conn = sqlite3.connect(str(DB_PATH))
-    create_kl8_table(conn)
-
+    """从数据库加载快乐8数据（limit 在 SQL 层生效，避免全表读入内存）"""
     try:
-        df = pd.read_sql("SELECT * FROM kl8_records ORDER BY period ASC", conn)
-        conn.close()
-
+        with get_connection(commit=False) as conn:
+            conn.execute(DDL_KL8_RECORDS)
+            if limit:
+                df = pd.read_sql(
+                    "SELECT period, date, numbers FROM kl8_records "
+                    "ORDER BY period DESC LIMIT ?", conn, params=(int(limit),)
+                )
+                df = df.iloc[::-1].reset_index(drop=True)
+            else:
+                df = pd.read_sql(
+                    "SELECT period, date, numbers FROM kl8_records ORDER BY period ASC", conn
+                )
         if len(df) == 0:
             return None
-
-        all_nums = []
-        for nums_str in df['numbers']:
-            nums = [int(x) for x in str(nums_str).split(',') if x.strip().isdigit()]
-            all_nums.append(nums)
-        df['num_list'] = all_nums
-
-        if limit and len(df) > limit:
-            df = df.tail(limit).reset_index(drop=True)
+        df['num_list'] = [
+            [int(x) for x in str(s).split(',') if x.strip().isdigit()]
+            for s in df['numbers']
+        ]
         return df
     except Exception as e:
-        print(f"  加载失败: {e}")
-        conn.close()
+        log.error("加载快乐8数据失败: %s", e)
         return None
 
 
@@ -320,7 +323,7 @@ def ensure_kl8_data(num_periods=50, force_refresh=False):
     """
     # 先检查数据库
     df = load_kl8_data(limit=num_periods)
-    if df is not None and len(df) >= min(num_periods, 20) and not force_refresh:
+    if df is not None and len(df) >= num_periods and not force_refresh:
         print(f"  从数据库加载 {len(df)} 期快乐8数据")
         return df
 

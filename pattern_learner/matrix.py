@@ -40,8 +40,10 @@ class LotteryMatrix:
             raise ValueError(f"Unknown type: {lottery_type}")
 
         self.num_range = self.max_num - self.min_num + 1
-        self.matrix = None  # (periods, numbers)
-        self.periods = None
+        # 用空矩阵占位（而非 None），避免下标/属性访问被类型检查器判定为对 None 操作；
+        # build_* 方法会填充真实数据，未构建时按空矩阵安全处理
+        self.matrix = np.zeros((0, self.max_num + 1), dtype=bool)
+        self.periods = np.array([], dtype=object)
         self.n_periods = 0
 
     def build_from_dlt(self, df, num_periods=None):
@@ -171,6 +173,23 @@ class LotteryMatrix:
         new_matrix = self.matrix.copy()
         new_matrix[0][candidate_num] = True
         return new_matrix
+
+    def add_candidate_inplace(self, candidate_num):
+        """
+        原地添加候选号码到第0行，返回是否成功
+        性能优化：避免每个候选号码都复制整个矩阵
+        """
+        if not (1 <= candidate_num <= self.max_num):
+            return False
+        if self.matrix[0][candidate_num]:
+            return False  # 已存在
+        self.matrix[0][candidate_num] = True
+        return True
+
+    def remove_candidate_inplace(self, candidate_num):
+        """移除第0行的候选号码（与 add_candidate_inplace 配对使用）"""
+        if 1 <= candidate_num <= self.max_num:
+            self.matrix[0][candidate_num] = False
 
     def get_context(self, num_periods=None):
         """获取上下文矩阵片段"""

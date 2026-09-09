@@ -42,7 +42,10 @@ class PatternLearner:
 
     def __init__(self, lottery_type='dlt'):
         self.lottery_type = lottery_type
-        self.matrix = None
+        # 初始化为空矩阵对象（而非 None）：build() 会重新构建并填充真实数据；
+        # 这样所有 self.matrix.matrix / self.matrix.n_periods 访问在类型层面均安全，
+        # 未训练时退化为 n_periods=0 的空矩阵，与调用方契约一致
+        self.matrix: LotteryMatrix = LotteryMatrix(self.lottery_type)
         self.pattern_stats = {}   # {pattern_name: {count, freq, weight}}
         self.pattern_history = []  # 每期的图案统计
 
@@ -96,6 +99,10 @@ class PatternLearner:
                         if 1 <= n <= self.num_range:
                             counts[n] += 1
                 cnt = counts[1:]
+                # 退化窗口(近30期无有效号码)时 cnt.sum()==0，else 分支不会赋值
+                # entropy/max_entropy，而下方 print 会无条件引用它们 → 必须先给默认值
+                entropy = 0.0
+                max_entropy = 1.0
                 if cnt.sum() > 0:
                     prob = cnt / cnt.sum()
                     entropy = -np.sum(prob * np.log2(prob + 1e-10))
@@ -249,12 +256,17 @@ class PatternLearner:
         results = []
 
         for num in candidates:
-            test_matrix = self.matrix.add_candidate(num)
-            if test_matrix is None:
+            # 性能优化：使用原地修改+恢复，避免每个候选号码都复制整个矩阵
+            if not self.matrix.add_candidate_inplace(num):
                 continue
+            test_matrix = self.matrix.matrix  # 直接使用内部矩阵（已原地修改）
 
             # 使用时间衰减加权统计
             use_decay = P['time_decay_weight'] > 0
+            # 始终初始化，避免 pyright 报 possibly-unbound；
+            # 二者仅在各自分支被真实赋值，且后续均通过 `if use_decay` 三元选择访问，空字典不会被误用
+            weighted_counts: dict = {}
+            raw_counts: dict = {}
             if use_decay:
                 weighted_counts = count_patterns_around_weighted(
                     test_matrix, row=0, col=num, decay=P['time_decay']
@@ -278,6 +290,7 @@ class PatternLearner:
                                     {'遗漏': om_label}))
                 else:
                     results.append((num, 0.0, {}))
+                self.matrix.remove_candidate_inplace(num)
                 continue
 
             score = 0.0
@@ -405,6 +418,7 @@ class PatternLearner:
                                 score *= penalty_factor ** distance
 
             results.append((num, round(score, 2), detail))
+            self.matrix.remove_candidate_inplace(num)  # 恢复矩阵状态
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results

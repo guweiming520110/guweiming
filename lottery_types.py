@@ -135,6 +135,30 @@ def next_period(lottery_type, period):
     return f"{year:02d}{seq + 1:03d}"
 
 
+def validate_period(lottery_type, period):
+    """
+    校验期号是否在合理范围内
+    
+    参数:
+        lottery_type: 彩种类型 (dlt/ssq/kl8)
+        period: 期号字符串
+    
+    返回:
+        bool: 期号是否合法
+    """
+    period = str(period).strip()
+    if lottery_type == 'kl8':
+        if len(period) < 5 or not period.isdigit():
+            return False
+        seq = int(period[4:])
+        return 1 <= seq <= 366
+    else:
+        if len(period) != 5 or not period.isdigit():
+            return False
+        seq = int(period[2:])
+        return 1 <= seq <= 200  # 宽松上界
+
+
 if __name__ == '__main__':
     for k, v in LOTTERY_TYPES.items():
         print(f"{k}: {v['name']} ({v['front_name']}{v['front_min']}-{v['front_max']}选{v['front_count']})")

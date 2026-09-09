@@ -1,9 +1,25 @@
 import numpy as np
 import pandas as pd
-from tensorflow import keras
-from tensorflow.keras import layers
 import pickle
 import os
+
+# 深度学习必须显式设置随机种子，否则每次训练结果都不可复现
+# （RF/XGBoost 侧已有 random_state=42，这里保持一致）
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+try:
+    import tensorflow as tf
+
+    tf.random.set_seed(RANDOM_SEED)
+except Exception:  # 未安装/导入失败时至少保证 numpy 侧可复现
+    tf = None
+
+try:
+    from tensorflow import keras
+    from tensorflow.keras import layers
+except ImportError:  # 允许在没有 tensorflow 的环境下导入本模块
+    keras = None
+    layers = None
 
 
 class DeepLearningPredictor:
@@ -78,7 +94,7 @@ class DeepLearningPredictor:
             layers.Bidirectional(layers.LSTM(64)),
             layers.Dropout(0.3),
             layers.Dense(128, activation='relu'),
-            layers.Dense(max_value + 1, activation='softmax')
+            layers.Dense(max_value, activation='softmax')
         ])
 
         model.compile(
@@ -115,7 +131,7 @@ class DeepLearningPredictor:
         x = layers.GlobalAveragePooling1D()(x)
         x = layers.Dense(128, activation='relu')(x)
         x = layers.Dropout(0.3)(x)
-        outputs = layers.Dense(max_value + 1, activation='softmax')(x)
+        outputs = layers.Dense(max_value, activation='softmax')(x)
 
         model = keras.Model(inputs=inputs, outputs=outputs)
 
@@ -125,6 +141,32 @@ class DeepLearningPredictor:
             metrics=['accuracy']
         )
 
+        return model
+
+    def _fit_model(self, model, X, y, epochs, batch_size, verbose):
+        """统一的"时序安全"训练入口。
+
+        keras 的 fit 默认 shuffle=True，会把滑动窗口样本顺序完全打乱；
+        更严重的是 validation_split 是在**打乱之后**随机抽取，等价于用
+        "未来"验证"过去"，验证指标完全虚高、不可信。
+        这里改为：显式 shuffle=False + 手工按时间顺序切最后 10% 作验证集。
+        """
+        n = len(X)
+        val_size = int(n * 0.1) if n >= 20 else 0
+        if val_size and n - val_size >= 1:
+            X_train, y_train = X[:-val_size], y[:-val_size]
+            validation_data = (X[-val_size:], y[-val_size:])
+        else:
+            X_train, y_train = X, y
+            validation_data = None
+
+        model.fit(
+            X_train.astype(np.float32), y_train,
+            epochs=epochs, batch_size=batch_size,
+            verbose=verbose if verbose in (0, 1, 2) else 1,
+            shuffle=False,
+            validation_data=validation_data,
+        )
         return model
 
     def train_models(self, df, epochs=50, batch_size=32, verbose=0):
@@ -148,7 +190,11 @@ class DeepLearningPredictor:
             num_front = 5
 
         # 判断后区数量
-        num_back = back_targets.shape[1] if len(back_targets.shape) > 1 else 1
+        if len(back_targets) == 0:
+            print("警告：无有效后区训练目标，跳过后区模型训练")
+            num_back = 0
+        else:
+            num_back = back_targets.shape[1] if back_targets.ndim > 1 else 1
 
         for i in range(num_front):
             print(f"  训练前区LSTM模型 {i+1}/{num_front}...")
@@ -158,16 +204,14 @@ class DeepLearningPredictor:
             lstm_model = self.build_lstm_model(
                 (self.sequence_length, num_front), num_front, self.front_max
             )
-            lstm_model.fit(front_seq.astype(np.float32), y, epochs=epochs, batch_size=batch_size,
-                      verbose=verbose if verbose in (0, 1, 2) else 1, validation_split=0.1)
+            self._fit_model(lstm_model, front_seq, y, epochs, batch_size, verbose)
             self.lstm_models_front.append(lstm_model)
 
             print(f"  训练前区Transformer模型 {i+1}/{num_front}...")
             transformer_model = self.build_transformer_model(
                 (self.sequence_length, num_front), num_front, self.front_max
             )
-            transformer_model.fit(front_seq.astype(np.float32), y, epochs=epochs, batch_size=batch_size,
-                                 verbose=verbose if verbose in (0, 1, 2) else 1, validation_split=0.1)
+            self._fit_model(transformer_model, front_seq, y, epochs, batch_size, verbose)
             self.transformer_models_front.append(transformer_model)
 
         for i in range(num_back):
@@ -179,16 +223,14 @@ class DeepLearningPredictor:
             lstm_model = self.build_lstm_model(
                 (self.sequence_length, num_back), num_back, self.back_max
             )
-            lstm_model.fit(back_seq.astype(np.float32), y, epochs=epochs, batch_size=batch_size,
-                      verbose=verbose if verbose in (0, 1, 2) else 1, validation_split=0.1)
+            self._fit_model(lstm_model, back_seq, y, epochs, batch_size, verbose)
             self.lstm_models_back.append(lstm_model)
 
             print(f"  训练后区Transformer模型 {i+1}/{num_back}...")
             transformer_model = self.build_transformer_model(
                 (self.sequence_length, num_back), num_back, self.back_max
             )
-            transformer_model.fit(back_seq.astype(np.float32), y, epochs=epochs, batch_size=batch_size,
-                                 verbose=verbose if verbose in (0, 1, 2) else 1, validation_split=0.1)
+            self._fit_model(transformer_model, back_seq, y, epochs, batch_size, verbose)
             self.transformer_models_back.append(transformer_model)
 
         print("✅ 深度学习模型训练完成")

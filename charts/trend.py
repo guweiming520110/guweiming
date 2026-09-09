@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from charts.utils import draw_number_ball, get_ball_color
 from charts.config import chart_config, zone_color_scheme
 
@@ -183,13 +184,13 @@ def generate_trend_chart(df, lottery_type='dlt', num_periods=50, figsize=(24, 12
         # 图例说明
         if has_history_pred:
             legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ECC71',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ECC71',
                            markersize=10, label='开奖号码'),
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#F1C40F',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#F1C40F',
                            markeredgecolor='#FFFF33', markersize=8, label='预测命中 ★'),
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#C0392B',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#C0392B',
                            markeredgecolor='#FF5555', markersize=8, label='预测未命中'),
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#333333',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#333333',
                            markeredgecolor='#999999', markersize=8, label='待验证'),
             ]
             ax_front.legend(handles=legend_elements, loc='upper right',
@@ -337,11 +338,11 @@ def generate_trend_chart(df, lottery_type='dlt', num_periods=50, figsize=(24, 12
         # 图例
         if has_history_pred:
             legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ECC71',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ECC71',
                            markersize=8, label='开奖'),
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#F1C40F',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#F1C40F',
                            markeredgecolor='#FFFF33', markersize=6, label='命中★'),
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#C0392B',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#C0392B',
                            markeredgecolor='#FF5555', markersize=6, label='未命中'),
             ]
             ax.legend(handles=legend_elements, loc='upper right',

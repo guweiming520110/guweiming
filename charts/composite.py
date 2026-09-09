@@ -12,7 +12,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import pandas as pd
-import numpy as np
 
 from charts.network import generate_network_chart
 from charts.trend import generate_trend_chart
@@ -85,8 +84,10 @@ def generate_composite_chart(df, lottery_type='dlt',
     ]
 
     buffers = {}
+    failed = []
     for name_key, title, gen in generators:
         print(f"  {title} ...", end=' ')
+        fig = None
         try:
             fig = gen()
             if fig:
@@ -94,20 +95,31 @@ def generate_composite_chart(df, lottery_type='dlt',
                 dpi = 150
                 fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
                             facecolor=fig.get_facecolor())
-                plt.close(fig)
                 buf.seek(0)
                 buffers[name_key] = buf
                 print("OK")
             else:
                 print("跳过")
         except Exception as e:
+            failed.append(f"{title}: {e}")
             print(f"失败: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # 无论成功失败都必须关闭，否则异常路径下 pyplot 会持续累积 figure
+            if fig is not None:
+                plt.close(fig)
 
     if not buffers:
         print("没有生成任何图表！")
-        return
+        return None
+
+    if failed:
+        # 残缺的合成图会让人误以为分析完整，宁可不输出
+        print(f"  ⚠️ {len(failed)} 张子图生成失败，放弃输出残缺合成图")
+        for f in failed:
+            print(f"     - {f}")
+        return None
 
     images = {k: plt.imread(buf) for k, buf in buffers.items()}
 

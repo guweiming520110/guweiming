@@ -82,7 +82,8 @@ def _load_ml_models(lottery_type='dlt'):
     try:
         from ml_models import LotteryPredictor
         predictor = LotteryPredictor(lottery_type)
-        predictor.load_models(path='models')
+        # 用绝对路径，避免依赖调用方的工作目录（脚本/服务两种入口都能找到模型）
+        predictor.load_models(path=str(Path(__file__).resolve().parent / 'models'))
         print(f"✅ 已加载 {lottery_type.upper()} RF/XGBoost 模型")
         return predictor
     except Exception as e:
@@ -101,7 +102,17 @@ def _get_ml_probs(predictor, df, lottery_type='dlt'):
 
         fe = FeatureEngineer(df, lottery_type=lottery_type)
         df_feat = fe.extract_all_features()
-        feature_cols = get_all_features()
+        # 只取实际存在的特征列：不同彩种（尤其 kl8）生成的特征并不完全一致，
+        # 直接用配置里的全量列名取子集会抛 KeyError，并被上层 except 静默吞掉，
+        # 表现为"ML 融合无声失效"。
+        all_cols = get_all_features()
+        feature_cols = [c for c in all_cols if c in df_feat.columns]
+        missing = [c for c in all_cols if c not in df_feat.columns]
+        if missing:
+            print(f"  ⚠️ {lottery_type} 有 {len(missing)} 个特征列未生成，已按现有特征预测")
+        if not feature_cols:
+            print(f"  ⚠️ {lottery_type} 没有任何可用特征列，跳过 ML 融合")
+            return None
 
         # 取最后一行作为最新特征
         latest = df_feat.iloc[-1:][feature_cols].fillna(0)
@@ -379,137 +390,144 @@ if __name__ == '__main__':
                         print(f"  ⚠️ 刷新快乐8开奖数据失败（将用现有数据验证）: {e}")
 
                 # 尝试自动验证
-                db = Path(__file__).resolve().parent.parent / 'lottery.db'
-                conn = sqlite3.connect(str(db))
+                from db_utils import get_connection
                 auto_verified = 0
                 still_pending = []
 
-                for p in my_pending:
-                    target_period = p['target_period']
-                    # 兼容数据库中 front/back_numbers 为 NULL 的历史记录
-                    front_pred = [int(x) for x in (p['front_numbers'] or '').split(',') if x.strip().isdigit()]
-                    back_pred = [int(x) for x in (p['back_numbers'] or '').split(',') if x.strip().isdigit()]
+                with get_connection() as conn:
+                    for p in my_pending:
+                        target_period = p['target_period']
+                        # 兼容数据库中 front/back_numbers 为 NULL 的历史记录
+                        front_pred = [int(x) for x in (p['front_numbers'] or '').split(',') if x.strip().isdigit()]
+                        back_pred = [int(x) for x in (p['back_numbers'] or '').split(',') if x.strip().isdigit()]
 
-                    # 查找实际开奖数据
-                    actual_found = False
-                    if lottery_type == 'kl8':
-                        cur = conn.execute(
-                            "SELECT numbers FROM kl8_records WHERE period=?",
-                            (target_period,)
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            actual_nums = [int(x) for x in row[0].split(',') if x.strip().isdigit()]
-                            front_match = set(front_pred) & set(actual_nums)
-                            save_verification(lottery_type, target_period,
-                                               p['front_numbers'], p['back_numbers'],
-                                               actual_nums, [], front_match, set())
-                            # 重建投注组合用于验证
-                            from prize_calculator import generate_kl8_combinations, verify_kl8_combinations, get_kl8_sh10_prize
-                            kl8_combos = generate_kl8_combinations(front_pred)
-                            kl8_verified = verify_kl8_combinations(kl8_combos, actual_nums)
-                            actual_found = True
-                    else:
-                        front_cnt = 5 if lottery_type == 'dlt' else 6
-                        back_cnt = 2 if lottery_type == 'dlt' else 1
-                        cur = conn.execute(
-                            f"SELECT {','.join([f'front_{k}' for k in range(1, front_cnt+1)])},"
-                            f"{','.join([f'back_{k}' for k in range(1, back_cnt+1)])} "
-                            f"FROM lottery_records WHERE lottery_type=? AND period=?",
-                            (lottery_type, target_period)
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            # 过滤 NULL 字段，避免 sorted() 比较 None 与 int 报错
-                            actual_front = [n for n in row[:front_cnt] if n is not None]
-                            actual_back = [n for n in row[front_cnt:] if n is not None]
-                            front_match = set(front_pred) & set(actual_front)
-                            back_match = set(back_pred) & set(actual_back)
-                            save_verification(lottery_type, target_period,
-                                               p['front_numbers'], p['back_numbers'],
-                                               actual_front, actual_back,
-                                               front_match, back_match)
-                            actual_found = True
-
-                    if actual_found:
-                        auto_verified += 1
-                        from prize_calculator import (format_hit_detail, format_prize_detail,
-                                                       get_prize, _fmt_nums)
-
-                        # 详细显示命中结果（含奖级）
-                        print(f"\n{'='*55}")
-                        print(f"  {LOTTERY_EMOJIS.get(lottery_type, '🎯')} 期{target_period} 验证结果")
-                        print(f"{'='*55}")
-
+                        # 查找实际开奖数据
+                        actual_found = False
+                        front_match = set()
+                        back_match = set()
+                        actual_front: list = []
+                        actual_back: list = []
+                        actual_nums: list = []
+                        kl8_combos = None
+                        kl8_verified = None
                         if lottery_type == 'kl8':
-                            # Top-20 级别显示
-                            print(f"  预测号码: {_fmt_nums(sorted(front_pred))}")
-                            print(f"  实际开奖: {_fmt_nums(sorted(actual_nums))}")
-                            print(f"  Top-20 命中: {_fmt_nums(sorted(front_match))} ({len(front_match)}/20 = {len(front_match)/20*100:.1f}%)")
-                            print(f"  {'─'*50}")
-
-                            # 组合级验证显示
-                            for key, label in [('single', '单式选十'), ('complex_11', '复式11码10+1'), ('complex_12', '复式12码10+2')]:
-                                print(f"  📋 {label}:")
-                                for i, v in enumerate(kl8_verified[key]):
-                                    pz = v['prize']
-                                    if pz and pz['is_winning']:
-                                        print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10) → 🎉 {pz['level']} {pz['bonus']}")
-                                    elif pz:
-                                        print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10) → {pz['match_desc']}")
-                                    else:
-                                        print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10)")
-                            print(f"  {'─'*50}")
-                            # 中奖汇总
-                            any_win = any(v['prize'] and v['prize']['is_winning'] for key in ['single', 'complex_11', 'complex_12'] for v in kl8_verified[key])
-                            if any_win:
-                                best = max((v['prize'] for key in ['single', 'complex_11', 'complex_12'] for v in kl8_verified[key] if v['prize'] and v['prize']['is_winning']), key=lambda x: x['match_count'])
-                                print(f"  🏆 最高奖级: {best['level']} ({best['bonus']})")
-                            else:
-                                print(f"  📊 所有组合均未中奖")
+                            cur = conn.execute(
+                                "SELECT numbers FROM kl8_records WHERE period=?",
+                                (target_period,)
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                actual_nums = [int(x) for x in row[0].split(',') if x.strip().isdigit()]
+                                front_match = set(front_pred) & set(actual_nums)
+                                save_verification(lottery_type, target_period,
+                                                   p['front_numbers'], p['back_numbers'],
+                                                   actual_nums, [], front_match, set())
+                                # 重建投注组合用于验证
+                                from prize_calculator import generate_kl8_combinations, verify_kl8_combinations, get_kl8_sh10_prize
+                                kl8_combos = generate_kl8_combinations(front_pred)
+                                kl8_verified = verify_kl8_combinations(kl8_combos, actual_nums)
+                                actual_found = True
                         else:
-                            front_name = '前区' if lottery_type == 'dlt' else '红球'
-                            back_name = '后区' if lottery_type == 'dlt' else '蓝球'
-                            print(f"  预测{front_name}: {_fmt_nums(sorted(front_pred))}")
-                            print(f"  实际{front_name}: {_fmt_nums(sorted(actual_front))}")
-                            print(f"  命中{front_name}: {_fmt_nums(sorted(front_match))} ({len(front_match)}/{len(front_pred)})")
-                            if back_pred and actual_back:
-                                print(f"  预测{back_name}: {_fmt_nums(sorted(back_pred))}")
-                                print(f"  实际{back_name}: {_fmt_nums(sorted(actual_back))}")
-                                print(f"  命中{back_name}: {_fmt_nums(sorted(back_match))} ({len(back_match)}/{len(back_pred)})")
+                            front_cnt = 5 if lottery_type == 'dlt' else 6
+                            back_cnt = 2 if lottery_type == 'dlt' else 1
+                            cur = conn.execute(
+                                f"SELECT {','.join([f'front_{k}' for k in range(1, front_cnt+1)])},"
+                                f"{','.join([f'back_{k}' for k in range(1, back_cnt+1)])} "
+                                f"FROM lottery_records WHERE lottery_type=? AND period=?",
+                                (lottery_type, target_period)
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                # 过滤 NULL 字段，避免 sorted() 比较 None 与 int 报错
+                                actual_front = [n for n in row[:front_cnt] if n is not None]
+                                actual_back = [n for n in row[front_cnt:] if n is not None]
+                                front_match = set(front_pred) & set(actual_front)
+                                back_match = set(back_pred) & set(actual_back)
+                                save_verification(lottery_type, target_period,
+                                                   p['front_numbers'], p['back_numbers'],
+                                                   actual_front, actual_back,
+                                                   front_match, back_match)
+                                actual_found = True
 
-                        # 中奖详情（非KL8才显示旧格式，KL8已在上方组合级显示）
-                        if lottery_type != 'kl8':
-                            print(f"  {'─'*50}")
-                            print(f"  🏆 中奖详情:")
-                            prize = get_prize(lottery_type, len(front_match), len(back_match))
-                            if prize['is_winning']:
-                                print(f"    🎉 奖级: {prize['level']} ({prize['match_desc']})")
-                                print(f"    奖金: {prize['bonus']}")
-                            else:
-                                print(f"    匹配: {prize['match_desc']} → 未中奖")
-                        print(f"{'='*55}\n")
-                        # 推送验证结果到钉钉
-                        if not args.no_notify:
-                            try:
-                                if lottery_type == 'kl8':
-                                    from notifier import send_kl8_verification
-                                    ok = send_kl8_verification(kl8_combos, actual_nums, target_period)
+                        if actual_found:
+                            auto_verified += 1
+                            from prize_calculator import (format_hit_detail, format_prize_detail,
+                                                           get_prize, _fmt_nums)
+
+                            # 详细显示命中结果（含奖级）
+                            print(f"\n{'='*55}")
+                            print(f"  {LOTTERY_EMOJIS.get(lottery_type, '🎯')} 期{target_period} 验证结果")
+                            print(f"{'='*55}")
+
+                            if lottery_type == 'kl8':
+                                assert kl8_verified is not None and actual_nums is not None
+                                # Top-20 级别显示
+                                print(f"  预测号码: {_fmt_nums(sorted(front_pred))}")
+                                print(f"  实际开奖: {_fmt_nums(sorted(actual_nums))}")
+                                print(f"  Top-20 命中: {_fmt_nums(sorted(front_match))} ({len(front_match)}/20 = {len(front_match)/20*100:.1f}%)")
+                                print(f"  {'─'*50}")
+
+                                # 组合级验证显示
+                                for key, label in [('single', '单式选十'), ('complex_11', '复式11码10+1'), ('complex_12', '复式12码10+2')]:
+                                    print(f"  📋 {label}:")
+                                    for i, v in enumerate(kl8_verified[key]):
+                                        pz = v['prize']
+                                        if pz and pz['is_winning']:
+                                            print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10) → 🎉 {pz['level']} {pz['bonus']}")
+                                        elif pz:
+                                            print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10) → {pz['match_desc']}")
+                                        else:
+                                            print(f"    {'AB'[i] if key == 'single' else f'注{i+1}'}: 命中 {_fmt_nums(v['hit'])} ({v['hit_count']}/10)")
+                                print(f"  {'─'*50}")
+                                # 中奖汇总
+                                any_win = any(v['prize'] and v['prize']['is_winning'] for key in ['single', 'complex_11', 'complex_12'] for v in kl8_verified[key])
+                                if any_win:
+                                    best = max((v['prize'] for key in ['single', 'complex_11', 'complex_12'] for v in kl8_verified[key] if v['prize'] and v['prize']['is_winning']), key=lambda x: x['match_count'])
+                                    print(f"  🏆 最高奖级: {best['level']} ({best['bonus']})")
                                 else:
-                                    ok = send_verification(lottery_type, front_pred, back_pred,
-                                                           front_match, back_match,
-                                                           actual_front, actual_back)
-                                print(f"  {'✅' if ok else '❌'} 钉钉验证推送: {'成功' if ok else '失败'}")
-                                if not ok:
-                                    print(f"  ⚠️ 钉钉验证推送返回失败，请检查消息格式或钉钉限制")
-                            except Exception as e:
-                                import traceback
-                                traceback.print_exc()
-                                print(f"  ⚠️ 钉钉验证推送异常: {e}")
-                    else:
-                        still_pending.append(p)
+                                    print(f"  📊 所有组合均未中奖")
+                            else:
+                                front_name = '前区' if lottery_type == 'dlt' else '红球'
+                                back_name = '后区' if lottery_type == 'dlt' else '蓝球'
+                                print(f"  预测{front_name}: {_fmt_nums(sorted(front_pred))}")
+                                print(f"  实际{front_name}: {_fmt_nums(sorted(actual_front))}")
+                                print(f"  命中{front_name}: {_fmt_nums(sorted(front_match))} ({len(front_match)}/{len(front_pred)})")
+                                if back_pred and actual_back:
+                                    print(f"  预测{back_name}: {_fmt_nums(sorted(back_pred))}")
+                                    print(f"  实际{back_name}: {_fmt_nums(sorted(actual_back))}")
+                                    print(f"  命中{back_name}: {_fmt_nums(sorted(back_match))} ({len(back_match)}/{len(back_pred)})")
 
-                conn.close()
+                            # 中奖详情（非KL8才显示旧格式，KL8已在上方组合级显示）
+                            if lottery_type != 'kl8':
+                                print(f"  {'─'*50}")
+                                print(f"  🏆 中奖详情:")
+                                prize = get_prize(lottery_type, len(front_match), len(back_match))
+                                if prize['is_winning']:
+                                    print(f"    🎉 奖级: {prize['level']} ({prize['match_desc']})")
+                                    print(f"    奖金: {prize['bonus']}")
+                                else:
+                                    print(f"    匹配: {prize['match_desc']} → 未中奖")
+                            print(f"{'='*55}\n")
+                            # 推送验证结果到钉钉
+                            if not args.no_notify:
+                                try:
+                                    if lottery_type == 'kl8':
+                                        assert kl8_combos is not None and actual_nums is not None
+                                        from notifier import send_kl8_verification
+                                        ok = send_kl8_verification(kl8_combos, actual_nums, target_period)
+                                    else:
+                                        ok = send_verification(lottery_type, front_pred, back_pred,
+                                                               front_match, back_match,
+                                                               actual_front, actual_back)
+                                    print(f"  {'✅' if ok else '❌'} 钉钉验证推送: {'成功' if ok else '失败'}")
+                                    if not ok:
+                                        print(f"  ⚠️ 钉钉验证推送返回失败，请检查消息格式或钉钉限制")
+                                except Exception as e:
+                                    import traceback
+                                    traceback.print_exc()
+                                    print(f"  ⚠️ 钉钉验证推送异常: {e}")
+                        else:
+                            still_pending.append(p)
 
                 if auto_verified > 0:
                     print(f"\n📌 自动验证了 {auto_verified} 条待验证预测")
@@ -531,6 +549,7 @@ if __name__ == '__main__':
     df = None
     front_preds = back_preds = None
     front_report = back_report = None
+    kl8_combos = None
 
     if lottery_type == 'kl8':
         from kl8_data import ensure_kl8_data
@@ -565,6 +584,7 @@ if __name__ == '__main__':
             latest_period = next_period(lottery_type, df.iloc[-1]['period'])
             if lottery_type == 'kl8':
                 # 保存 Top-20 到数据库（兼容旧字段）
+                assert kl8_combos is not None
                 front_nums = kl8_combos['top_20']
                 save_prediction(lottery_type, latest_period, front_nums)
             else:
@@ -577,15 +597,16 @@ if __name__ == '__main__':
             # 发送钉钉通知（受 --no-notify 控制）
             if not args.no_notify:
                 if lottery_type == 'kl8':
+                    assert kl8_combos is not None
                     ok = send_prediction(
                         lottery_type, front_preds, None,
-                        front_report, '', df, kl8_combos,
+                        front_report or '', '', df, kl8_combos,
                         target_period=latest_period
                     )
                 else:
                     ok = send_prediction(
                         lottery_type, front_preds, back_preds,
-                        front_report, back_report, df,
+                        front_report or '', back_report or '', df,
                         target_period=latest_period
                     )
                 print(f"\n{'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")

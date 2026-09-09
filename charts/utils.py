@@ -6,10 +6,11 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from matplotlib.patches import Circle
 
 
-def draw_number_ball(ax, x, y, number, facecolor, edgecolor='white',
+def draw_number_ball(ax, x, y, number, facecolor, edgecolor: str | tuple = 'white',
                      radius=0.38, fontsize=9, alpha=1.0, zorder=5):
     """绘制号码圆球"""
     circle = Circle((x, y), radius, facecolor=facecolor, edgecolor=edgecolor,
@@ -153,7 +154,7 @@ def should_connect(matrix, n, max_val, i, j, ni, nj, step=1):
 
 def draw_cell_box(ax, row, col, face, edge, lw):
     """绘制一个网格单元格"""
-    ax.add_patch(plt.Rectangle((col - 0.5, row - 0.5), 1, 1,
+    ax.add_patch(Rectangle((col - 0.5, row - 0.5), 1, 1,
                                 facecolor=face, edgecolor=edge,
                                 linewidth=lw, zorder=1))
 

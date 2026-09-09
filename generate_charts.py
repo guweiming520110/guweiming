@@ -14,7 +14,6 @@
 
 import sqlite3
 import pandas as pd
-import numpy as np
 import os
 import sys
 from pathlib import Path
@@ -66,8 +65,8 @@ def load_data(lottery_type='dlt', db_path=None, limit=None):
 
     conn = sqlite3.connect(str(db_path))
     try:
-        query = f"SELECT * FROM {data_table} WHERE lottery_type='{data_type}' ORDER BY period ASC"
-        df = pd.read_sql(query, conn)
+        query = f"SELECT * FROM {data_table} WHERE lottery_type=? ORDER BY period ASC"
+        df = pd.read_sql(query, conn, params=(data_type,))
         print(f"从数据库加载了 {len(df)} 条 {cfg['name']} 历史记录")
     except Exception as e:
         print(f"数据库查询失败: {e}")
@@ -179,6 +178,8 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
             # 绝不能盲取 df.iloc[-1]（数据库最新一期）——否则会出现
             # "用上一期/相邻期开奖号验证本期预测"的期号错位 bug。
             actual_row = None
+            actual_front: list = []
+            actual_back: list = []
             if target_period is not None:
                 matched = df[df['period'].astype(str) == str(target_period)]
                 if len(matched) > 0:
@@ -205,7 +206,7 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                         'kl8', target_period,
                         front_str, '',
                         actual_front, [],
-                        verified_front_set, set()
+                        verified_front_set or set(), set()
                     )
                     print(f"  💾 验证结果已保存到数据库(期{target_period})")
                     # 推送钉钉通知
@@ -292,6 +293,8 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
 
         # 验证模式：检查预测命中
         verified_front_set, verified_back_set = None, None  # None=未验证
+        actual_front: list = []
+        actual_back: list = []
         if verify and predict_front:
             front_cnt = cfg['front_count']
             back_cnt = cfg['back_count']
@@ -378,14 +381,14 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
                     lottery_type, str(target_period),
                     front_str, back_str,
                     actual_front, actual_back,
-                    verified_front_set, verified_back_set
+                    verified_front_set, verified_back_set or set()
                 )
 
                 # 发送钉钉通知
                 ok = send_verification(
                     lottery_type,
                     predict_front, predict_back or [],
-                    verified_front_set, verified_back_set,
+                    verified_front_set, verified_back_set or set(),
                     actual_front, actual_back
                 )
                 print(f"\n{'✅' if ok else '❌'} 钉钉验证推送: {'成功' if ok else '失败'}")

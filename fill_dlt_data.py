@@ -6,73 +6,64 @@
 """
 
 import re
-import time
-import sqlite3
-import pandas as pd
-import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-import requests
 from bs4 import BeautifulSoup
+
+from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from db_utils import get_connection
+from http_utils import get_with_retry, sleep_interval
+from logger import log
+from lottery_types import next_period
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-}
+HEADERS = HTTP_HEADERS
+
+# 单次补全最多翻页数，防止接口恒返回同一批数据时无限循环打站
+MAX_PAGES = 40
 
 
-def _get_with_retry(url, max_retries=3, timeout=20):
-    """带指数退避重试的 GET 请求辅助函数。
-
-    对网络异常（超时/连接失败）与非 2xx 状态码做最多 max_retries 次重试，
-    退避间隔为 1s、2s、4s……全部失败返回 None。
-    """
-    for attempt in range(max_retries):
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        except Exception as e:
-            wait = 2 ** attempt
-            print(f"  请求失败(第{attempt + 1}/{max_retries}次): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(wait)
-    return None
+def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
+    """向后兼容包装：统一委托 http_utils.get_with_retry（指数退避重试）"""
+    return get_with_retry(url, max_retries=max_retries, timeout=timeout,
+                          encoding=HTTP_ENCODING)
 
 
 def get_db_status():
     """检查数据库中大乐透数据的完整状态"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.execute(
-        "SELECT COUNT(*), MIN(period), MAX(period) FROM lottery_records WHERE lottery_type='dlt'"
-    )
-    cnt, pmin, pmax = cur.fetchone()
+    with get_connection(commit=False) as conn:
+        cur = conn.execute(
+            "SELECT COUNT(*), MIN(period), MAX(period) FROM lottery_records WHERE lottery_type='dlt'"
+        )
+        cnt, pmin, pmax = cur.fetchone()
 
-    cur = conn.execute(
-        "SELECT period, date FROM lottery_records WHERE lottery_type='dlt' ORDER BY period"
-    )
-    rows = cur.fetchall()
-    conn.close()
+        cur = conn.execute(
+            "SELECT period, date FROM lottery_records WHERE lottery_type='dlt' ORDER BY period"
+        )
+        rows = cur.fetchall()
 
-    periods = [int(r[0]) for r in rows]
-    # 找缺失（同一年内）
+    # 非数字期号直接跳过，避免 int() 抛异常中断整个补全流程
+    periods = [int(r[0]) for r in rows if str(r[0]).strip().isdigit()]
+
     gaps = []
     for i in range(len(periods) - 1):
         gap = periods[i + 1] - periods[i]
-        if gap > 1:
-            # 检查是否为同年内缺失（期号为 YYNNN，前2位是年份）
-            if str(periods[i])[:2] == str(periods[i + 1])[:2]:
-                gaps.append((periods[i], periods[i + 1], gap - 1))
+        if gap <= 1:
+            continue
+        same_year = str(periods[i])[:2] == str(periods[i + 1])[:2]
+        # 跨年场景用 next_period 判断是否属于正常的年度滚动
+        # （如 25150 → 26001 属正常，不应算作缺口）
+        is_rollover = False
+        try:
+            is_rollover = next_period('dlt', str(periods[i])) == str(periods[i + 1])
+        except Exception:
+            is_rollover = False
+        # 忽略跨度异常大的情况（历史数据本身缺失过多，区间爬取也补不回来）
+        if (same_year or not is_rollover) and (gap - 1) <= 500:
+            gaps.append((periods[i], periods[i + 1], gap - 1))
 
     return {
         'count': cnt,
@@ -80,7 +71,7 @@ def get_db_status():
         'max_period': pmax,
         'latest_date': rows[-1][1] if rows else None,
         'gaps': gaps,
-        'latest_period': int(pmax) if pmax else 0,
+        'latest_period': int(pmax) if pmax and str(pmax).strip().isdigit() else 0,
     }
 
 
@@ -90,8 +81,21 @@ def fetch_dlt_page(start_period, end_period):
     resp = _get_with_retry(url)
     if resp is None:
         return None
-    resp.encoding = 'gb2312'
+    # 编码已由 http_utils 统一设置（GBK），此处不再硬编码 gb2312
     return resp.text
+
+
+def _pick_date(texts):
+    """从表格单元格文本中挑出合法的 YYYY-MM-DD 日期，找不到返回空串。
+
+    不能直接用最后一列：500.com 表格末列可能是奖池/销售额等数字；
+    且解析不出日期时返回空串，而不是伪造一个 20YY-01-01。
+    """
+    for t in reversed(texts):
+        m = re.match(r'(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})', str(t).strip())
+        if m:
+            return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return ''
 
 
 def parse_dlt_numbers(html):
@@ -127,9 +131,8 @@ def parse_dlt_numbers(html):
                 if date_match:
                     date_str = f"{date_match.group(1)}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
                 else:
-                    # 从期号推算大致年份（期号为 YYNNN，前2位是年份后两位）
-                    year = f"20{period[:2]}"
-                    date_str = f"{year}-01-01"
+                    # 解析不到就留空，绝不伪造日期（虚假日期会污染按日期的统计）
+                    date_str = ''
 
                 records.append({
                     'period': period,
@@ -173,7 +176,7 @@ def parse_dlt_numbers(html):
             if all(1 <= n <= 35 for n in front) and all(1 <= n <= 12 for n in back):
                 records.append({
                     'period': period,
-                    'date': texts[-1] if len(texts) > 8 else f"20{period[:2]}-01-01",
+                    'date': _pick_date(texts),
                     'front': sorted(front),
                     'back': sorted(back),
                 })
@@ -236,92 +239,119 @@ def fill_missing_data():
     else:
         print(f"  年内数据连续")
 
-    conn = sqlite3.connect(str(DB_PATH))
-    total_added = 0
+    with get_connection() as conn:
+        total_added = 0
 
-    latest = status['latest_period']
+        latest = status['latest_period']
 
-    # 空库场景：latest=0 时若从第1期爬，会落到 1~51 期（真实大乐透早已是 26xxx 期），
-    # 什么都抓不到。改为从"去年年初"起爬（期号 YYNNN），靠下方 while 循环往后补齐，
-    # 保证有足够历史期数供预测使用。
-    if not latest:
-        cur_yy = datetime.now().year % 100
-        batch_start = (cur_yy - 1) * 1000 + 1  # 去年年初，如 2026 → 25001
-    else:
-        batch_start = latest + 1
-    batch_end = batch_start + 50
-
-    print(f"\n  正在检查 {batch_start} 期之后的新数据...")
-
-    def _save_records(records):
-        """将一批记录写入数据库，返回实际保存条数"""
-        saved = 0
-        for r in records:
-            try:
-                conn.execute(
-                    """INSERT OR REPLACE INTO lottery_records
-                       (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, back_1, back_2)
-                       VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (r['period'], r['date'],
-                     r['front'][0], r['front'][1], r['front'][2], r['front'][3], r['front'][4],
-                     r['back'][0], r['back'][1])
-                )
-                saved += 1
-            except Exception:
-                pass
-        conn.commit()
-        return saved
-
-    # 先回补年内缺失的中段空洞：get_db_status 已算出 gaps（每段为
-    # (前一期, 后一期, 缺失数)），逐段爬取区间中间的期号并入库，避免只在末尾追加新期。
-    if status['gaps']:
-        print(f"\n  正在回补 {len(status['gaps'])} 段年内缺失...")
-        for prev_p, next_p, miss in status['gaps']:
-            gap_records = scrape_dlt_range(prev_p + 1, next_p - 1)
-            if gap_records:
-                saved = _save_records(gap_records)
-                total_added += saved
-                print(f"  回补 {prev_p + 1}~{next_p - 1} 段: 新增 {saved} 期")
-
-    records = scrape_dlt_range(batch_start, batch_end)
-    if records:
-        saved = _save_records(records)
-        total_added += saved
-        print(f"  新增 {saved} 期数据")
-
-        # 如果这次获取到了数据，继续获取后续
-        while len(records) >= 50:
-            batch_start = int(records[-1]['period']) + 1
-            batch_end = batch_start + 50
-            records = scrape_dlt_range(batch_start, batch_end)
-            if not records:
-                break
-            saved = _save_records(records)
-            total_added += saved
-            print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
-
-    # 跨年续爬：大乐透期号按年重置（如 ...25150 → 26001），区间接口从 25151 起会返回空，
-    # 导致今年数据补不上。补完去年后，若最新期仍停在去年，则从今年年初继续爬一轮。
-    cur_yy = datetime.now().year % 100
-    last_period = int(conn.execute(
-        "SELECT MAX(CAST(period AS INTEGER)) FROM lottery_records WHERE lottery_type='dlt'"
-    ).fetchone()[0] or 0)
-    if last_period and (last_period // 1000) < cur_yy:
-        batch_start = cur_yy * 1000 + 1  # 今年年初，如 26001
+        # 空库场景：latest=0 时若从第1期爬，会落到 1~51 期（真实大乐透早已是 26xxx 期），
+        # 什么都抓不到。改为从"去年年初"起爬（期号 YYNNN），靠下方翻页循环往后补齐，
+        # 保证有足够历史期数供预测使用。
+        if not latest:
+            cur_yy = datetime.now().year % 100
+            batch_start = (cur_yy - 1) * 1000 + 1  # 去年年初，如 2026 → 25001
+        else:
+            batch_start = latest + 1
         batch_end = batch_start + 50
-        print(f"\n  跨年续爬 {cur_yy} 年数据（从 {batch_start} 起）...")
+
+        print(f"\n  正在检查 {batch_start} 期之后的新数据...")
+
+        def _save_records(records):
+            """将一批记录写入数据库，返回实际新增条数"""
+            saved = 0
+            for r in records:
+                # 数据校验：确保记录合法性
+                if not r.get('period') or not str(r['period']).strip().isdigit():
+                    continue
+                front = r.get('front', [])
+                if len(front) != 5 or not all(1 <= n <= 35 for n in front):
+                    continue
+                back = r.get('back', [])
+                if len(back) != 2 or not all(1 <= n <= 12 for n in back):
+                    continue
+                try:
+                    cur = conn.execute(
+                        """INSERT OR IGNORE INTO lottery_records
+                           (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, back_1, back_2)
+                           VALUES ('dlt', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (r['period'], r.get('date', ''),
+                         front[0], front[1], front[2], front[3], front[4],
+                         back[0], back[1])
+                    )
+                    # rowcount 为实际插入行数，被 IGNORE 跳过时为 0
+                    if cur.rowcount > 0:
+                        saved += 1
+                except Exception as e:
+                    log.warning("保存 %s 期失败: %s", r.get('period'), e)
+            conn.commit()
+            return saved
+
+        # 先回补年内缺失的中段空洞：get_db_status 已算出 gaps（每段为
+        # (前一期, 后一期, 缺失数)），逐段爬取区间中间的期号并入库，避免只在末尾追加新期。
+        if status['gaps']:
+            print(f"\n  正在回补 {len(status['gaps'])} 段年内缺失...")
+            for prev_p, next_p, miss in status['gaps']:
+                gap_records = scrape_dlt_range(prev_p + 1, next_p - 1)
+                sleep_interval()
+                if gap_records:
+                    saved = _save_records(gap_records)
+                    total_added += saved
+                    print(f"  回补 {prev_p + 1}~{next_p - 1} 段: 新增 {saved} 期")
+
         records = scrape_dlt_range(batch_start, batch_end)
-        while records:
+        sleep_interval()
+        if records:
             saved = _save_records(records)
             total_added += saved
-            print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
-            if len(records) < 50:
-                break
-            batch_start = int(records[-1]['period']) + 1
-            batch_end = batch_start + 50
-            records = scrape_dlt_range(batch_start, batch_end)
+            print(f"  新增 {saved} 期数据")
 
-    conn.close()
+            # 继续向后翻页。必须同时限制页数并要求期号推进：
+            # 若接口忽略区间参数恒返回最新 50 条，旧写法会陷入无间隔的死循环打站。
+            for _ in range(MAX_PAGES):
+                if len(records) < 50:
+                    break
+                new_start = int(records[-1]['period']) + 1
+                if new_start <= batch_start:
+                    print("  ⚠️ 期号未推进，停止翻页（接口可能忽略了区间参数）")
+                    break
+                batch_start = new_start
+                batch_end = batch_start + 50
+                records = scrape_dlt_range(batch_start, batch_end)
+                sleep_interval()
+                if not records:
+                    break
+                saved = _save_records(records)
+                total_added += saved
+                print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
+
+        # 跨年续爬：大乐透期号按年重置（如 ...25150 → 26001），区间接口从 25151 起会返回空，
+        # 导致今年数据补不上。补完去年后，若最新期仍停在去年，则从今年年初继续爬一轮。
+        cur_yy = datetime.now().year % 100
+        last_period = int(conn.execute(
+            "SELECT MAX(CAST(period AS INTEGER)) FROM lottery_records WHERE lottery_type='dlt'"
+        ).fetchone()[0] or 0)
+        if last_period and (last_period // 1000) < cur_yy:
+            batch_start = cur_yy * 1000 + 1  # 今年年初，如 26001
+            batch_end = batch_start + 50
+            print(f"\n  跨年续爬 {cur_yy} 年数据（从 {batch_start} 起）...")
+            records = scrape_dlt_range(batch_start, batch_end)
+            sleep_interval()
+            for _ in range(MAX_PAGES):
+                if not records:
+                    break
+                saved = _save_records(records)
+                total_added += saved
+                print(f"  追加 {saved} 期 (至 {records[-1]['period']})")
+                if len(records) < 50:
+                    break
+                new_start = int(records[-1]['period']) + 1
+                if new_start <= batch_start:
+                    print("  ⚠️ 期号未推进，停止翻页")
+                    break
+                batch_start = new_start
+                batch_end = batch_start + 50
+                records = scrape_dlt_range(batch_start, batch_end)
+                sleep_interval()
 
     # 打印补全后状态
     new_status = get_db_status()

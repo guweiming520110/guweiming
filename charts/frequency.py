@@ -99,7 +99,7 @@ def generate_frequency_chart(df, lottery_type='dlt', num_periods=100, figsize=(2
 
             ax.set_xlim(0.5, 80.5)
             ax.set_xticks(range(1, 81, 2))
-            ax.set_xticklabels(range(1, 81, 2), fontsize=4, rotation=90)
+            ax.set_xticklabels([str(x) for x in range(1, 81, 2)], fontsize=4, rotation=90)
             ax.set_title(f'{cfg["name"]} · 号码频率分布图（近 {n} 期 · 每期20码）',
                          fontsize=13, fontweight='bold')
             ax.set_xlabel('号码', fontsize=10)

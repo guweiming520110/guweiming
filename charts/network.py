@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from charts.utils import (
     draw_number_ball, draw_connection, should_connect,
     draw_cell_box, get_ball_color, get_reason_color
@@ -134,8 +135,9 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # ---- 构建存在矩阵 ----
     front_matrix = np.zeros((total_rows, front_max + 1), dtype=bool)
 
-    if has_back:
-        back_matrix = np.zeros((total_rows, back_max + 1), dtype=bool)
+    # 始终分配，避免 has_back 为 False（如 kl8）时变量未绑定；
+    # 无后区时该矩阵为空且不会被后区循环使用（循环受 has_back 守卫）
+    back_matrix = np.zeros((total_rows, max(back_max, 0) + 1), dtype=bool)
 
     if lottery_type == 'kl8':
         # kl8: 从 num_list 读取
@@ -494,7 +496,9 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # ---- 坐标轴 ----
     front_ticks = list(range(front_min, front_max + 1, 2))
     if has_back:
-        back_ticks = [back_start + i for i in range(back_min, back_max + 1)]
+        # 号码 bj 实际画在 bj + back_shift 列，而 back_start = back_shift + back_min，
+        # 因此刻度应为 back_start + (bj - back_min)；旧写法整体右移了 1 列。
+        back_ticks = [back_start + (i - back_min) for i in range(back_min, back_max + 1)]
         all_ticks = front_ticks + back_ticks
         all_labels = [str(t) for t in front_ticks] + [str(t) for t in range(back_min, back_max + 1)]
     else:
@@ -513,27 +517,27 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
 
     # ---- 图例 ----
     legend_elements = [
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=HISTORY_BALL_COLOR,
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=HISTORY_BALL_COLOR,
                    markersize=9, label='开奖号码(绿底白字)'),
-        plt.Line2D([0], [0], color='#888888', linewidth=2, alpha=0.5, label='相邻号码连线'),
+        Line2D([0], [0], color='#888888', linewidth=2, alpha=0.5, label='相邻号码连线'),
     ]
     if has_pred:
         legend_elements.append(
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#222222',
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='#222222',
                        markeredgecolor='white', markersize=9, label='预测号码(未验证)'))
         # 验证后的图例
         has_verified_any = (verified_front is not None) or (verified_back is not None)
         if has_verified_any:
             legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#EECC00',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#EECC00',
                            markeredgecolor='#DDAA00', markersize=9, label='预测正确(黄底白字★)'))
             legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DD2222',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#DD2222',
                            markeredgecolor='#FF3333', markersize=9, label='预测错误(红底白字)'))
         for kw, clr, lbl in [('水平', '#4CAF50', '水平理由'), ('垂直', '#2196F3', '垂直理由'),
                               ('对角', '#FF9800', '对角理由'), ('三角', '#9C27B0', '三角理由')]:
             legend_elements.append(
-                plt.Line2D([0], [0], color=clr, linewidth=3, alpha=0.8, label=lbl))
+                Line2D([0], [0], color=clr, linewidth=3, alpha=0.8, label=lbl))
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.85, fontsize=8, ncol=6)
 
     # ---- 标题 ----

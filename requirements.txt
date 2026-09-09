@@ -1,0 +1,13 @@
+# 数字彩票分析系统 - Python 依赖
+# 安装: pip install -r requirements.txt
+
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+tensorflow>=2.15.0
+matplotlib>=3.8.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+scipy>=1.11.0
+optuna>=3.4.0

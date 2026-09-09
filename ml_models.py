@@ -47,8 +47,7 @@ class LotteryPredictor:
             self.front_count = 6
             self.back_count = 1
         elif lottery_type == 'fc3d':
-            self.front_count = 3
-            self.back_count = 0
+            raise NotImplementedError("福彩3D 尚未完整实现，暂不支持")
         else:
             raise ValueError(f"不支持的彩票类型: {lottery_type}")
         
@@ -178,11 +177,11 @@ class LotteryPredictor:
             unique_values = df[f'front_{i}'].unique()
             model = self.rf_models_front[i-1]
             
-            for val in unique_values[:5]:
+            for val in unique_values:
                 if val not in model.classes_:
                     raise ValueError(
                         f"模型与数据不匹配！前区号码{i}模型不包含数值{val}。"
-                        f"模型类别: {model.classes_[:10]}..., 数据包含: {unique_values[:10]}..."
+                        f"模型类别范围: {model.classes_.min()}-{model.classes_.max()}, 数据包含: {unique_values.min()}-{unique_values.max()}"
                         f"\n请删除旧模型重新训练。"
                     )
         
@@ -191,7 +190,7 @@ class LotteryPredictor:
             unique_values = df[f'back_{i}'].unique()
             model = self.rf_models_back[i-1]
             
-            for val in unique_values[:5]:
+            for val in unique_values:
                 if val not in model.classes_:
                     raise ValueError(
                         f"模型与数据不匹配！后区号码{i}模型不包含数值{val}。"
@@ -275,6 +274,7 @@ class LotteryPredictor:
                 back_proba_dict[num].append(prob * xgb_weight)
 
         if dl_active:
+            assert self.dl_predictor is not None
             try:
                 dl_probs = self.dl_predictor.predict_with_probabilities(self.full_df)
 
@@ -316,40 +316,42 @@ class LotteryPredictor:
         
         if play_type == 'basic':
             result['predictions'].append({
-                'front': sorted([num for num, _ in sorted_front[:5]]),
-                'back': sorted([num for num, _ in sorted_back[:2]]),
-                'front_probs': {num: float(prob) for num, prob in sorted_front[:5]},
-                'back_probs': {num: float(prob) for num, prob in sorted_back[:2]}
+                'front': sorted([num for num, _ in sorted_front[:self.front_count]]),
+                'back': sorted([num for num, _ in sorted_back[:self.back_count]]),
+                'front_probs': {num: float(prob) for num, prob in sorted_front[:self.front_count]},
+                'back_probs': {num: float(prob) for num, prob in sorted_back[:self.back_count]}
             })
         
         elif play_type == 'multiple':
             for i in range(3):
                 start_idx = i * 2
-                front_slice = sorted_front[start_idx:start_idx+5]
-                back_slice = sorted_back[:2] if i == 0 else sorted_back[min(i, len(sorted_back)-2):min(i+2, len(sorted_back))]
+                front_slice = sorted_front[start_idx:start_idx+self.front_count]
+                back_slice = sorted_back[:self.back_count] if i == 0 else sorted_back[min(i, len(sorted_back)-self.back_count):min(i+self.back_count, len(sorted_back))]
                 
-                if len(front_slice) >= 5 and len(back_slice) >= 2:
+                if len(front_slice) >= self.front_count and len(back_slice) >= self.back_count:
                     result['predictions'].append({
-                        'front': sorted([num for num, _ in front_slice[:5]]),
-                        'back': sorted([num for num, _ in back_slice[:2]]),
-                        'front_probs': {num: float(prob) for num, prob in front_slice[:5]},
-                        'back_probs': {num: float(prob) for num, prob in back_slice[:2]}
+                        'front': sorted([num for num, _ in front_slice[:self.front_count]]),
+                        'back': sorted([num for num, _ in back_slice[:self.back_count]]),
+                        'front_probs': {num: float(prob) for num, prob in front_slice[:self.front_count]},
+                        'back_probs': {num: float(prob) for num, prob in back_slice[:self.back_count]}
                     })
         
         elif play_type == 'top_prob':
+            top_front = self.front_count * 2
+            top_back = max(self.back_count * 2, 5)
             result['predictions'].append({
-                'front': sorted([num for num, _ in sorted_front[:10]]),
-                'back': sorted([num for num, _ in sorted_back[:5]]),
-                'front_probs': {num: float(prob) for num, prob in sorted_front[:10]},
-                'back_probs': {num: float(prob) for num, prob in sorted_back[:5]}
+                'front': sorted([num for num, _ in sorted_front[:top_front]]),
+                'back': sorted([num for num, _ in sorted_back[:top_back]]),
+                'front_probs': {num: float(prob) for num, prob in sorted_front[:top_front]},
+                'back_probs': {num: float(prob) for num, prob in sorted_back[:top_back]}
             })
         
         elif play_type == 'dantuo':
             front_dan = sorted([num for num, _ in sorted_front[:2]])
-            front_tuo = sorted([num for num, _ in sorted_front[2:8]])
+            front_tuo = sorted([num for num, _ in sorted_front[2:self.front_count+3]])
             
             back_dan = sorted([num for num, _ in sorted_back[:1]])
-            back_tuo = sorted([num for num, _ in sorted_back[1:4]])
+            back_tuo = sorted([num for num, _ in sorted_back[1:self.back_count+2]])
             
             result['predictions'].append({
                 'front_dan': front_dan,
@@ -357,9 +359,9 @@ class LotteryPredictor:
                 'back_dan': back_dan,
                 'back_tuo': back_tuo,
                 'front_dan_probs': {num: float(prob) for num, prob in sorted_front[:2]},
-                'front_tuo_probs': {num: float(prob) for num, prob in sorted_front[2:8]},
+                'front_tuo_probs': {num: float(prob) for num, prob in sorted_front[2:self.front_count+3]},
                 'back_dan_probs': {num: float(prob) for num, prob in sorted_back[:1]},
-                'back_tuo_probs': {num: float(prob) for num, prob in sorted_back[1:4]},
+                'back_tuo_probs': {num: float(prob) for num, prob in sorted_back[1:self.back_count+2]},
                 'combination_count': self._calculate_dantuo_combinations(len(front_dan), len(front_tuo), len(back_dan), len(back_tuo)),
                 'description': f'前区胆{len(front_dan)}拖{len(front_tuo)}，后区胆{len(back_dan)}拖{len(back_tuo)}'
             })
@@ -369,8 +371,8 @@ class LotteryPredictor:
     def _calculate_dantuo_combinations(self, front_dan, front_tuo, back_dan, back_tuo):
         """计算胆拖组合数量"""
         from math import comb
-        front_need = 5 - front_dan
-        back_need = 2 - back_dan
+        front_need = self.front_count - front_dan
+        back_need = self.back_count - back_dan
         
         if front_tuo < front_need or back_tuo < back_need:
             return 0
@@ -484,7 +486,7 @@ class LotteryPredictor:
             model_info += f", LSTM={self.lstm_weight}, Transformer={self.transformer_weight}"
         print(f"✅ 模型已保存到 {save_path} ({model_info})")
     
-    def load_models(self, path='models'):
+    def load_models(self, path='models', load_dl=False):
         # 从彩票类型对应的子目录加载
         load_path = os.path.join(path, self.lottery_type)
         
@@ -525,7 +527,7 @@ class LotteryPredictor:
         else:
             print(f"✅ 模型已从 {path} 加载 (使用默认权重)")
         
-        if os.path.exists(f'{load_path}/dl_config.pkl'):
+        if load_dl and os.path.exists(f'{load_path}/dl_config.pkl'):
             try:
                 from deep_learning_models import DeepLearningPredictor
                 self.dl_predictor = DeepLearningPredictor()

@@ -19,11 +19,12 @@ class FeatureEngineer:
         self.lottery_type = lottery_type
 
         # 根据彩票类型设置号码范围和列名
+        # front_range/back_range 采用 Python range 约定：(min, max+1)，即 range(1,36) 覆盖 1~35
         if lottery_type == 'dlt':
             self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
             self.back_cols = ['back_1', 'back_2']
-            self.front_range = (1, 36)
-            self.back_range = (1, 13)
+            self.front_range = (1, 36)  # 大乐透前区: 1-35
+            self.back_range = (1, 13)   # 大乐透后区: 1-12
         elif lottery_type == 'ssq':
             self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5', 'front_6']
             self.back_cols = ['back_1']
@@ -296,6 +297,8 @@ class FeatureEngineer:
         # 改为按期增量累计：计算第 idx 行时，频率字典只包含 0..idx-1 期(严格历史)，
         # 计算完成后再把本期号码计入字典供后续期使用；最终再整体下移一期，
         # 使第 idx 行仅携带 idx 之前已知的信息。
+        # 性能优化：KL8 每期20个号码，triplet 组合 C(20,3)=1140 过于昂贵，跳过 triplet 计算
+        compute_triplets = self.lottery_type != 'kl8'
         pair_counts = Counter()
         triplet_counts = Counter()
         front_freq = Counter()      # 号码出现次数（仅累计历史）
@@ -325,12 +328,13 @@ class FeatureEngineer:
                         max_pair_freq = max(max_pair_freq, pair_counts[pair])
 
             max_triplet_freq = 0
-            for i in range(len(nums)):
-                for j in range(i+1, len(nums)):
-                    for k in range(j+1, len(nums)):
-                        triplet = (nums[i], nums[j], nums[k])
-                        if triplet in triplet_counts:
-                            max_triplet_freq = max(max_triplet_freq, triplet_counts[triplet])
+            if compute_triplets:
+                for i in range(len(nums)):
+                    for j in range(i+1, len(nums)):
+                        for k in range(j+1, len(nums)):
+                            triplet = (nums[i], nums[j], nums[k])
+                            if triplet in triplet_counts:
+                                max_triplet_freq = max(max_triplet_freq, triplet_counts[triplet])
 
             max_pmi = 0
             if seen_draws > 0 and seen_number_slots > 0:
@@ -353,10 +357,11 @@ class FeatureEngineer:
             for i in range(len(nums)):
                 for j in range(i+1, len(nums)):
                     pair_counts[(nums[i], nums[j])] += 1
-            for i in range(len(nums)):
-                for j in range(i+1, len(nums)):
-                    for k in range(j+1, len(nums)):
-                        triplet_counts[(nums[i], nums[j], nums[k])] += 1
+            if compute_triplets:
+                for i in range(len(nums)):
+                    for j in range(i+1, len(nums)):
+                        for k in range(j+1, len(nums)):
+                            triplet_counts[(nums[i], nums[j], nums[k])] += 1
             for num in nums:
                 front_freq[num] += 1
             seen_draws += 1
@@ -393,7 +398,8 @@ class FeatureEngineer:
                     date_obj = pd.to_datetime(row[date_col])
                     weekday = date_obj.weekday()
                     month = date_obj.month
-            except:
+            except Exception:
+                # 单期日期解析失败时退化为安全默认值，避免整列特征提取中断
                 weekday = 0
                 month = 1
 
@@ -569,15 +575,19 @@ class FeatureEngineer:
         # 也纳入检索，导致每行的相似度用到了未来期与本期(预测目标)信息。
         # 改为对每个 idx 仅用【idx 之前的历史行】构建近邻并检索本期行；
         # 计算完成后再整体下移一期，使第 idx 行仅携带 idx 之前的信息。
+        # 性能优化：使用滑动窗口限制历史范围，避免逐行 fit 全量历史
         feature_matrix = self.df[self.front_cols].values
+        window_size = k * 4  # 窗口大小：只用最近 k*4 期做近邻
 
         similarity_scores = []
         for idx in range(len(feature_matrix)):
-            history = feature_matrix[:idx]  # 严格历史（不含本期及未来）
-            if len(history) < k:
-                # 历史样本不足，无法稳定估计相似度，置 0
+            if idx < k:
                 similarity_scores.append(0)
                 continue
+
+            # 窗口化：只用最近 window_size 期历史，而非全量历史
+            window_start = max(0, idx - window_size)
+            history = feature_matrix[window_start:idx]
 
             n_neighbors = min(k, len(history))
             nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric='euclidean')
@@ -1109,11 +1119,14 @@ class FeatureEngineer:
 
 
 if __name__ == "__main__":
-    from database import Database
-
-    db = Database()
-    df = db.get_all_records()
-
+    import sqlite3
+    from pathlib import Path
+    BASE_DIR = Path(__file__).resolve().parent
+    ROOT_DIR = BASE_DIR.parent
+    DB_PATH = ROOT_DIR / 'lottery.db'
+    conn = sqlite3.connect(str(DB_PATH))
+    df = pd.read_sql("SELECT * FROM lottery_records WHERE lottery_type='dlt' ORDER BY period", conn)
+    conn.close()
     if not df.empty:
         fe = FeatureEngineer(df)
         df_features = fe.extract_all_features()
@@ -1121,3 +1134,5 @@ if __name__ == "__main__":
         print(f"特征数量: {len(df_features.columns)}")
         print(f"列名: {list(df_features.columns)}")
         print(df_features.head())
+    else:
+        print("数据库中没有大乐透记录，无法运行特征工程")
