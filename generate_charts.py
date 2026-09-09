@@ -33,7 +33,12 @@ from charts.composite import generate_composite_chart
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
 DB_PATH = ROOT_DIR / 'lottery.db'
-OUTPUT_DIR = BASE_DIR / 'charts'
+# H5: 图表产物输出统一到 config.OUTPUT_DIR（根目录/output，与 charts/ 源码包分离），
+# 避免 PNG 与 .py 混放导致 Windows 文件占用/清理误删源码
+try:
+    from config import OUTPUT_DIR
+except ImportError:
+    OUTPUT_DIR = ROOT_DIR / 'output'
 
 try:
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans SC']

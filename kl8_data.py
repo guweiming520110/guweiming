@@ -6,6 +6,7 @@
 """
 
 import re
+from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
 
@@ -26,6 +27,24 @@ KL8_DRAWN = 20
 VALID_PERIODS = (30, 50, 100)
 
 HEADERS = HTTP_HEADERS
+
+
+def period_to_date(period):
+    """期号 YYYYNNN → 开奖日期 (快乐8每天开一期，第1期=1月1日，闰年自动处理)。
+
+    500.com 走势图无日期列导致 date 字段全空(C4修复)，
+    官方规则确定为每日1期，可由期号精确反推；无法反推时返回 ''。
+    """
+    period = str(period).strip()
+    if len(period) < 5 or not period.isdigit():
+        return ''
+    year = int(period[:4])
+    seq = int(period[4:])
+    try:
+        base = datetime(year, 1, 1)
+        return (base + timedelta(days=seq - 1)).strftime('%Y-%m-%d')
+    except (ValueError, OverflowError):
+        return ''
 
 
 def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
@@ -134,16 +153,17 @@ def _parse_from_tbody(tbody):
         for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
             if idx > KL8_NUMS:
                 break
-            # 检查是否是开奖号码
+            # H1: 仅 chartBall01 是真实开奖号码；chartBall02 语义未确认为非中奖态，
+            # 并入会产生每期多出几十个号码 → 截断后错误入库污染训练
             td_class = td.get('class', [])
-            if 'chartBall01' in td_class or 'chartBall02' in td_class:
+            if 'chartBall01' in td_class:
                 numbers.append(idx)
 
-        if len(numbers) < KL8_DRAWN:
+        # H2: 数量必须恰好等于 20，否则整行拒收——畸形行会谎报为正常数据
+        if len(numbers) != KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
+                        period, len(numbers), KL8_DRAWN)
             continue
-        if len(numbers) > KL8_DRAWN:
-            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
-                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
         # 尝试从行末列提取日期（YYYY-MM-DD 格式）
         date_str = _extract_date(cells)
         records.append({
@@ -174,7 +194,8 @@ def _parse_from_text(html):
         period = period_match.group(1)
 
         # 提取所有td，找到包含 chartBall01 的td，它的位置就是号码
-        td_pattern = r'<td[^>]*class="[^"]*(chartBall01|chartBall02)[^"]*"[^>]*>.*?</td>'
+        # H1: 只认 chartBall01（真实开奖球），chartBall02 语义未确认为非中奖态
+        td_pattern = r'<td[^>]*class="[^"]*chartBall01[^"]*"[^>]*>.*?</td>'
         td_matches = list(re.finditer(td_pattern, row_html))
 
         # 找出这些td在该行中的位置索引（从1开始）
@@ -189,11 +210,11 @@ def _parse_from_text(html):
                     numbers.append(idx)
                     break
 
-        if len(numbers) < KL8_DRAWN:
+        # H2: 数量必须恰好 20，畸形行整行拒收
+        if len(numbers) != KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
+                        period, len(numbers), KL8_DRAWN)
             continue
-        if len(numbers) > KL8_DRAWN:
-            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
-                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
         # 该分支只有 HTML 文本、没有 td 标签对象，因此改用正则提取日期
         _m = re.search(r'(\d{4}-\d{2}-\d{2})', row_html)
         date_str = _m.group(1) if _m else ''
@@ -225,16 +246,17 @@ def _parse_from_table(table):
         for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
             if idx > KL8_NUMS:
                 break
-            # 检查是否是开奖号码
+            # H1: 仅 chartBall01 是真实开奖号码；chartBall02 语义未确认为非中奖态，
+            # 并入会产生每期多出几十个号码 → 截断后错误入库污染训练
             td_class = td.get('class', [])
-            if 'chartBall01' in td_class or 'chartBall02' in td_class:
+            if 'chartBall01' in td_class:
                 numbers.append(idx)
 
-        if len(numbers) < KL8_DRAWN:
+        # H2: 数量必须恰好等于 20，否则整行拒收——畸形行会谎报为正常数据
+        if len(numbers) != KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
+                        period, len(numbers), KL8_DRAWN)
             continue
-        if len(numbers) > KL8_DRAWN:
-            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，仅取前 %d 个",
-                        period, len(numbers), KL8_DRAWN, KL8_DRAWN)
         # 尝试从行末列提取日期（YYYY-MM-DD 格式）
         date_str = _extract_date(cells)
         records.append({
@@ -270,16 +292,31 @@ def scrape_from_500(num_periods=50):
 
 
 def save_to_db(records):
-    """保存到数据库"""
+    """保存到数据库
+
+    C4: date 缺失时按期号反推补全（500.com 走势图无日期列）；
+    H3: 反推日期晚于今天 ＝ 站点回包未来数据，整条跳过，绝不污染历史表。
+    """
     saved = 0
+    today = datetime.now().date()
     with get_connection() as conn:
         conn.execute(DDL_KL8_RECORDS)
         for r in records:
             try:
                 numbers_str = ','.join(str(n) for n in r['numbers'])
+                date_str = (r.get('date') or period_to_date(r['period'])) or ''
+                # 未来数据守卫：期号反推出的日期晚于今天，说明读到了未开奖的预览期
+                if date_str:
+                    try:
+                        d = datetime.strptime(date_str, '%Y-%m-%d').date()
+                        if d > today:
+                            log.warning("期%s 日期(%s)晚于今天，跳过未来数据", r['period'], date_str)
+                            continue
+                    except ValueError:
+                        pass
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
-                    (r['period'], r.get('date', ''), numbers_str)
+                    (r['period'], date_str, numbers_str)
                 )
                 # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
                 # 不能用连接级累计的 total_changes 判断
@@ -320,12 +357,40 @@ def load_kl8_data(limit=None):
 def ensure_kl8_data(num_periods=50, force_refresh=False):
     """
     确保快乐8真实数据可用（仅从500.com获取，不使用模拟数据）
+
+    H4 修复: 除"条数够不够"外增加新鲜度校验——快乐8每日开1期，
+    最新一期距今天超过 2 天即视为陈旧，强制重新拉取，避免用旧数据预测。
     """
     # 先检查数据库
     df = load_kl8_data(limit=num_periods)
     if df is not None and len(df) >= num_periods and not force_refresh:
-        print(f"  从数据库加载 {len(df)} 期快乐8数据")
-        return df
+        # 新鲜度校验：取最新一期日期（date 列或期号反推），超过 2 天视为陈旧
+        latest = df.iloc[-1]
+        latest_date = None
+        ds = latest.get('date')
+        if ds:
+            try:
+                latest_date = datetime.strptime(str(ds), '%Y-%m-%d').date()
+            except ValueError:
+                latest_date = None
+        if latest_date is None:
+            _d = period_to_date(latest.get('period', ''))
+            if _d:
+                try:
+                    latest_date = datetime.strptime(_d, '%Y-%m-%d').date()
+                except ValueError:
+                    latest_date = None
+
+        if latest_date is not None:
+            days_old = (datetime.now().date() - latest_date).days
+            if days_old <= 2:
+                print(f"  从数据库加载 {len(df)} 期快乐8数据 (最新期 {latest['period']} · {latest_date} · {days_old}天前)")
+                return df
+            print(f"  ⚠️ 快乐8最新期 {latest['period']} 已是 {days_old} 天前，数据陈旧，重新拉取最新")
+        else:
+            # 极端兜底：无任何日期可校验时退化为仅按条数判断
+            print(f"  从数据库加载 {len(df)} 期快乐8数据 (无日期信息，跳过新鲜度检查)")
+            return df
 
     # 从500.com爬取真实数据
     records = scrape_from_500(num_periods)

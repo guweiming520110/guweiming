@@ -44,6 +44,14 @@ class FeatureEngineer:
             raise ValueError(f"不支持的彩票类型: {lottery_type}")
 
     def extract_all_features(self):
+        """
+        提取全部特征。
+
+        语义约定（C1 修复）：特征 = 「截止当期 t 已知的所有信息，含当期开奖」(info≤t)。
+        防数据泄漏由训练侧保证：ml_models 训练时标签 shift(-1)，
+        即「第 t 行特征 → 预测开奖 t+1」，故特征与目标永不同期。
+        推理时喂最后一行（info≤N）即正确预测 N+1 期。
+        """
         self.df = self.df.sort_values('period').reset_index(drop=True)
 
         self.add_number_frequency()
@@ -152,12 +160,14 @@ class FeatureEngineer:
                 'avg_back_omission': np.mean(list(back_omission.values())) if back_omission else 0,
             })
 
+        # 先确认列表非空（空表/新彩种时直接返回，防 IndexError）
+        if not omission_records:
+            return
         for key in omission_records[0].keys():
             self.df[key] = [r[key] for r in omission_records]
             # 防数据泄漏：遗漏值在循环中先用本期(idx)开奖号码归零再记录，
             # 因此第 idx 行的遗漏统计已含本期(预测目标)信息，整体下移一期，
             # 使第 idx 行只携带 idx 之前已知的信息。
-            self.df[key] = self.df[key].shift(1).fillna(0)
 
     def add_odd_even_ratio(self):
         odd_counts = []
@@ -181,8 +191,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：奇偶个数直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        self.df['odd_count'] = self.df['odd_count'].shift(1).fillna(0)
-        self.df['even_count'] = self.df['even_count'].shift(1).fillna(0)
 
     def add_size_ratio(self):
         # 动态计算大小号阈值（取号码范围的中点）
@@ -209,8 +217,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：大小号个数直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        self.df['large_count'] = self.df['large_count'].shift(1).fillna(0)
-        self.df['small_count'] = self.df['small_count'].shift(1).fillna(0)
 
     def add_sum_values(self):
         sums = []
@@ -229,7 +235,6 @@ class FeatureEngineer:
         # 防数据泄漏：和值直接由本期(idx)开奖号码求和得到（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
         # 注意：add_sum_trend_features 会消费本列，届时读到的已是下移后的安全值。
-        self.df['front_sum'] = self.df['front_sum'].shift(1).fillna(0)
 
     def add_ac_value(self):
         # AC值 = 差值个数 - (号码个数-1)
@@ -253,7 +258,6 @@ class FeatureEngineer:
         # 防数据泄漏：AC值直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
         # 注意：add_ac_span_trend_features 会消费本列，届时读到的已是下移后的安全值。
-        self.df['ac_value'] = self.df['ac_value'].shift(1).fillna(0)
 
     def add_span_value(self):
         spans = []
@@ -273,7 +277,6 @@ class FeatureEngineer:
         # 防数据泄漏：跨度直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
         # 注意：add_ac_span_trend_features 会消费本列，届时读到的已是下移后的安全值。
-        self.df['span'] = self.df['span'].shift(1).fillna(0)
 
     def get_hot_cold_numbers(self, top_n=10):
         sorted_front = sorted(self.front_freq.items(), key=lambda x: x[1], reverse=True)
@@ -319,7 +322,7 @@ class FeatureEngineer:
                 nums = sorted([row[col] for col in self.front_cols])
 
             # ---- 用截止 idx-1 的历史频率计算本期分数（此处仍会用到本期号码做查询，
-            #      末尾再统一 shift(1) 消除该项泄漏）----
+            #      截止当期(info≤t)的分数，直接用作特征（训练侧标签 shift(-1) 防泄漏）----
             max_pair_freq = 0
             for i in range(len(nums)):
                 for j in range(i+1, len(nums)):
@@ -373,9 +376,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：上述分数仍用本期开奖号码做查询，整体下移一期，
         # 使第 idx 行的分数完全由 idx 之前的历史与号码得出。
-        self.df['max_pair_freq'] = self.df['max_pair_freq'].shift(1).fillna(0)
-        self.df['max_triplet_freq'] = self.df['max_triplet_freq'].shift(1).fillna(0)
-        self.df['pmi_score'] = self.df['pmi_score'].shift(1).fillna(0)
 
     def add_temporal_features(self):
         date_col = 'date' if 'date' in self.df.columns else 'draw_date'
@@ -453,8 +453,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：连号个数/最长连号直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        self.df['consecutive_count'] = self.df['consecutive_count'].shift(1).fillna(0)
-        self.df['max_consecutive'] = self.df['max_consecutive'].shift(1).fillna(0)
 
     def add_interval_density(self):
         # 分三区
@@ -501,7 +499,6 @@ class FeatureEngineer:
                 self.df[f'zone_{i}_count'] = zone_counts[i]
                 # 防数据泄漏：分区个数直接由本期(idx)开奖号码算出（等价于预测目标），
                 # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-                self.df[f'zone_{i}_count'] = self.df[f'zone_{i}_count'].shift(1).fillna(0)
             return
         else:
             zone1_counts = []
@@ -522,9 +519,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：分区个数直接由本期(idx)开奖号码算出（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        self.df['zone1_count'] = self.df['zone1_count'].shift(1).fillna(0)
-        self.df['zone2_count'] = self.df['zone2_count'].shift(1).fillna(0)
-        self.df['zone3_count'] = self.df['zone3_count'].shift(1).fillna(0)
 
     def add_volatility_features(self, window=10):
         rolling_std = []
@@ -563,8 +557,6 @@ class FeatureEngineer:
         # 防数据泄漏：滚动窗口 iloc[start_idx:idx+1] 右端含本期(idx)开奖号码，
         # 波动率/熵中混入了预测目标。整体下移一期，使第 idx 行的统计
         # 只覆盖到 idx-1 期，仅携带 idx 之前已知的信息。
-        self.df['rolling_std'] = self.df['rolling_std'].shift(1).fillna(0)
-        self.df['rolling_entropy'] = self.df['rolling_entropy'].shift(1).fillna(0)
 
     def add_similarity_features(self, k=5):
         if self.lottery_type == 'kl8':
@@ -599,7 +591,6 @@ class FeatureEngineer:
 
         self.df['similarity_score'] = similarity_scores
         # 防数据泄漏：检索时用到了本期开奖号码，整体下移一期。
-        self.df['similarity_score'] = self.df['similarity_score'].shift(1).fillna(0)
 
     def add_short_term_momentum(self, windows=[5, 10, 20]):
         """
@@ -647,12 +638,6 @@ class FeatureEngineer:
             self.df[front_momentum_col] = front_momentum
             if self.back_cols:
                 self.df[back_momentum_col] = back_momentum
-
-            # 防数据泄漏：上述计算用到了本期(idx)开奖号码（预测目标），
-            # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-            self.df[front_momentum_col] = self.df[front_momentum_col].shift(1).fillna(0)
-            if self.back_cols:
-                self.df[back_momentum_col] = self.df[back_momentum_col].shift(1).fillna(0)
 
     def add_conditional_gap_features(self):
         """
@@ -714,10 +699,6 @@ class FeatureEngineer:
 
         # 防数据泄漏：各类间隔在循环中已根据本期(idx)开奖号码更新（等价于预测目标），
         # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        self.df['odd_gap'] = self.df['odd_gap'].shift(1).fillna(0)
-        self.df['even_gap'] = self.df['even_gap'].shift(1).fillna(0)
-        self.df['large_gap'] = self.df['large_gap'].shift(1).fillna(0)
-        self.df['small_gap'] = self.df['small_gap'].shift(1).fillna(0)
 
     def add_transition_features(self):
         """
@@ -757,12 +738,6 @@ class FeatureEngineer:
         if self.back_cols:
             self.df['prev_back_overlap'] = prev_back_overlap
         self.df['transition_score'] = transition_score
-
-        # 防数据泄漏：overlap/transition 用到了本期(idx)开奖号码，整体下移一期
-        self.df['prev_front_overlap'] = self.df['prev_front_overlap'].shift(1).fillna(0)
-        if self.back_cols:
-            self.df['prev_back_overlap'] = self.df['prev_back_overlap'].shift(1).fillna(0)
-        self.df['transition_score'] = self.df['transition_score'].shift(1).fillna(0)
 
     # ========== 新增高阶特征 ==========
 
@@ -823,13 +798,6 @@ class FeatureEngineer:
         self.df['max_same_tail'] = max_same_tail
         for m in range(3):
             self.df[f'tail_mod3_{m}'] = tail_mod3_counts[m]
-
-        # 防数据泄漏：尾数分布/同尾数直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
-        tail_cols = [f'tail_{d}' for d in range(10)] + ['max_same_tail'] + \
-                    [f'tail_mod3_{m}' for m in range(3)]
-        for col in tail_cols:
-            self.df[col] = self.df[col].shift(1).fillna(0)
 
     def add_sum_trend_features(self, windows=[5, 10]):
         """
@@ -914,7 +882,6 @@ class FeatureEngineer:
 
         self.df['edge_code_count'] = edge_counts
         # 防数据泄漏：edge_code_count 统计了本期(idx)开奖号码，整体下移一期
-        self.df['edge_code_count'] = self.df['edge_code_count'].shift(1).fillna(0)
 
     def add_repeat_number_features(self):
         """
@@ -942,7 +909,6 @@ class FeatureEngineer:
 
             self.df['repeat_from_last'] = repeat_counts
             # 防数据泄漏：重号数用到了本期(idx)开奖号码，整体下移一期
-            self.df['repeat_from_last'] = self.df['repeat_from_last'].shift(1).fillna(0)
             return
 
         repeat_counts = []
@@ -957,7 +923,6 @@ class FeatureEngineer:
 
         self.df['repeat_from_last'] = repeat_counts
         # 防数据泄漏：重号数用到了本期(idx)开奖号码，整体下移一期
-        self.df['repeat_from_last'] = self.df['repeat_from_last'].shift(1).fillna(0)
 
     # ============================================================
     # Phase 6: 共现对 / 邻号 / 区间分布增强
@@ -1034,11 +999,6 @@ class FeatureEngineer:
         self.df['triplet_coverage_top10'] = triplet_cov10
         self.df['triplet_score_sum'] = triplet_score_sum
 
-        # 防数据泄漏：覆盖度/得分用到了本期开奖号码，整体下移一期
-        for col in ['pair_coverage_top5', 'pair_coverage_top10', 'pair_score_sum',
-                    'triplet_coverage_top5', 'triplet_coverage_top10', 'triplet_score_sum']:
-            self.df[col] = self.df[col].shift(1).fillna(0)
-
     def add_neighbor_features(self):
         """
         邻号特征：上期开奖号码的 ±1 邻号，在本期开奖号码中的命中情况。
@@ -1070,8 +1030,6 @@ class FeatureEngineer:
         self.df['neighbor_hit_count'] = neighbor_hit_counts
         self.df['neighbor_hit_ratio'] = neighbor_hit_ratios
         # 防数据泄漏：命中数用到了本期开奖号码，整体下移一期
-        self.df['neighbor_hit_count'] = self.df['neighbor_hit_count'].shift(1).fillna(0)
-        self.df['neighbor_hit_ratio'] = self.df['neighbor_hit_ratio'].shift(1).fillna(0)
 
     def add_zone4_features(self):
         """
@@ -1110,12 +1068,6 @@ class FeatureEngineer:
                                          for i in range(len(self.df))]
 
         # 防数据泄漏：四区计数/遗漏/热区ID均用到了本期开奖号码，整体下移一期
-        self.df['zone4_1_count'] = self.df['zone4_1_count'].shift(1).fillna(0)
-        self.df['zone4_2_count'] = self.df['zone4_2_count'].shift(1).fillna(0)
-        self.df['zone4_3_count'] = self.df['zone4_3_count'].shift(1).fillna(0)
-        self.df['zone4_4_count'] = self.df['zone4_4_count'].shift(1).fillna(0)
-        self.df['zone4_max_omission'] = self.df['zone4_max_omission'].shift(1).fillna(0)
-        self.df['zone4_hot_zone_id'] = self.df['zone4_hot_zone_id'].shift(1).fillna(0)
 
 
 if __name__ == "__main__":

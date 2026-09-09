@@ -79,71 +79,78 @@ class LotteryPredictor:
     def train_random_forest(self, df):
         if len(df) < 50:
             raise ValueError(f"训练数据不足：需要至少50条数据，当前只有{len(df)}条")
-        
-        X = self.prepare_data(df)
-        
-        print(f"开始训练随机森林模型，数据量: {len(df)}条")
-        
+
+        df = df.copy().reset_index(drop=True)
+        # C1 修复: 特征语义 = 截止当期(info≤t, 含当期开奖)；标签 = 下一期开奖(t+1)。
+        # 因此剔除最后一行特征(它没有"下一期"标签)，scaler 也只在该段上 fit。
+        feat_df = df.iloc[:-1]
+        X = self.prepare_data(feat_df)
+
+        print(f"开始训练随机森林模型，数据量: {len(feat_df)}条有效样本 (原{len(df)}条, 末行保留作推理最新特征)")
+
         # 训练前区模型
         for i in range(1, self.front_count + 1):
-            y = df[f'front_{i}'].values
+            y = df[f'front_{i}'].shift(-1).iloc[:-1].values
             unique_classes = np.unique(y)
             print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
-            
+
             model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
             model.fit(X, y)
             self.rf_models_front.append(model)
-        
+
         # 训练后区模型
         for i in range(1, self.back_count + 1):
-            y = df[f'back_{i}'].values
+            y = df[f'back_{i}'].shift(-1).iloc[:-1].values
             unique_classes = np.unique(y)
             print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
-            
+
             model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
             model.fit(X, y)
             self.rf_models_back.append(model)
-        
+
         print("✅ 随机森林模型训练完成")
-    
+
     def train_xgboost(self, df):
         if len(df) < 50:
             raise ValueError(f"训练数据不足：需要至少50条数据，当前只有{len(df)}条")
-        
-        X = self.prepare_data(df)
-        
-        print(f"开始训练XGBoost模型，数据量: {len(df)}条")
-        
+
+        df = df.copy().reset_index(drop=True)
+        # C1 修复: 同 train_random_forest —— 特征 info≤t，标签下一期开奖 t+1
+        feat_df = df.iloc[:-1]
+        X = self.prepare_data(feat_df)
+
+        print(f"开始训练XGBoost模型，数据量: {len(feat_df)}条有效样本 (原{len(df)}条, 末行保留作推理最新特征)")
+
         # 训练前区模型
         for i in range(1, self.front_count + 1):
-            y = df[f'front_{i}'].values
+            y = df[f'front_{i}'].shift(-1).iloc[:-1].values
             unique_classes = np.unique(y)
             print(f"  前区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
-            
+
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
-            
+
             model = xgb.XGBClassifier(n_estimators=100, max_depth=6, random_state=42, eval_metric='mlogloss')
             model.fit(X, y_encoded)
-            
+
             self.xgb_models_front.append(model)
             self.label_encoders_front.append(le)
-        
+
         # 训练后区模型
         for i in range(1, self.back_count + 1):
-            y = df[f'back_{i}'].values
+            y = df[f'back_{i}'].shift(-1).iloc[:-1].values
             unique_classes = np.unique(y)
             print(f"  后区号码{i}: {len(unique_classes)}个不同值 (范围: {min(unique_classes)}-{max(unique_classes)})")
-            
+
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
-            
+
             model = xgb.XGBClassifier(n_estimators=100, max_depth=6, random_state=42, eval_metric='mlogloss')
             model.fit(X, y_encoded)
-            
+
             self.xgb_models_back.append(model)
             self.label_encoders_back.append(le)
-        
+
         print("✅ XGBoost模型训练完成")
     
     def train_stacking(self, df):

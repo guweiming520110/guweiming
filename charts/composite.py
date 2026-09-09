@@ -18,6 +18,13 @@ from charts.trend import generate_trend_chart
 from charts.frequency import generate_frequency_chart
 from charts.config import chart_config
 
+# 统一输出目录：优先用 config.OUTPUT_DIR（根目录/output，与 .py 源码分离），
+# 独立运行图表模块时降级为 项目根/output（H5 修复）
+try:
+    from config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR
+except ImportError:
+    DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / 'output'
+
 
 def generate_composite_chart(df, lottery_type='dlt',
                              network_periods=30, trend_periods=50,
@@ -41,8 +48,7 @@ def generate_composite_chart(df, lottery_type='dlt',
     name = cfg['name']
 
     if output_dir is None:
-        BASE_DIR = Path(__file__).resolve().parent.parent
-        output_dir = BASE_DIR / 'charts'
+        output_dir = DEFAULT_OUTPUT_DIR
     output_dir = Path(output_dir)
     os.makedirs(str(output_dir), exist_ok=True)
 

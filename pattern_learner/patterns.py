@@ -40,7 +40,7 @@ PATTERN_TEMPLATES = [
         'name': 'horiz_gap2',
         'label': '水平隔1空3连',
         'offsets': [(0, 0), (0, 2), (0, 4)],
-        'step': 2,
+        'step': 1,
         'min_rows': 1,
         'complexity': 'C',
         'base_score': 0.4,
@@ -66,15 +66,8 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 1.2,
     },
-    {
-        'name': 'vert_gap2',
-        'label': '垂直隔1空3连',
-        'offsets': [(0, 0), (2, 0), (4, 0)],
-        'step': 2,
-        'min_rows': 5,
-        'complexity': 'B',
-        'base_score': 0.9,
-    },
+    # 注：原 vert_gap2(垂直隔1空3连) 与 skip1_3vert 去平移后 footprint 完全相同
+    # （step 修复后均为偏移 0,2,4），已删除以免双重计分；语义由 skip1_3vert 承担
 
     # ---- 3. 对角线 ↘（B级） ----
     {
@@ -86,15 +79,8 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 0.8,
     },
-    {
-        'name': 'diag_se_gap2',
-        'label': '对角↘隔1空',
-        'offsets': [(0, 0), (2, 2), (4, 4)],
-        'step': 2,
-        'min_rows': 5,
-        'complexity': 'B',
-        'base_score': 0.9,
-    },
+    # 注：原 diag_se_gap2 与 skip1_diag 去平移后 footprint 完全相同（step 修复后均为偏移 0,2,4），
+    # 已删除以免双重计分；隔1空对角语义由 skip1_diag 承担
 
     # ---- 4. 对角线 ↙（B级） ----
     {
@@ -110,7 +96,7 @@ PATTERN_TEMPLATES = [
         'name': 'diag_sw_gap2',
         'label': '对角↙隔1空',
         'offsets': [(0, 0), (2, -2), (4, -4)],
-        'step': 2,
+        'step': 1,
         'min_rows': 5,
         'complexity': 'B',
         'base_score': 0.9,
@@ -130,7 +116,7 @@ PATTERN_TEMPLATES = [
         'name': 'square_2x2_gap',
         'label': '2×2隔空方块',
         'offsets': [(0, 0), (0, 2), (2, 0), (2, 2)],
-        'step': 2,
+        'step': 1,
         'min_rows': 3,
         'complexity': 'S',
         'base_score': 2.5,
