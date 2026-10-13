@@ -427,7 +427,7 @@ def step_run_predictions(no_notify, data_ok=None, failures=None):
             df_ssq = None
             failures.append('预测: 双色球数据不可用，已跳过')
         if df_ssq is not None:
-            result = pred_mod.predict_ssq(df_ssq, num_periods=50, backtest_n=5)
+            result = pred_mod.predict_ssq(df_ssq, num_periods=50, backtest_n=5, use_ml=True)
             if result:
                 front_preds, back_preds, front_report, back_report = result
                 front_top6 = [str(n) for n, s, d in front_preds[:cfg_ssq['front_count']]]

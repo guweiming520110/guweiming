@@ -36,6 +36,51 @@ SCORE_PARAMS = {
     'last_n_penalty_count': 2,     # 对最近N期号码降权 (新增)
 }
 
+# 方向3: 按彩种的评分参数校准（消融实验结论，见 evaluate.py）
+# -------------------------------------------------------------
+# 消融实验（40期 walk-forward，对比随机基线）实测：
+#   dlt: 稀有度加权是严重负贡献（关闭后 0.500→0.750，超过随机 0.714）
+#   kl8: 稀有度加权是核心正贡献（关闭后 5.575→5.225，仍高于随机 5.00）
+# 结论：稀有度/多样性能在 kl8(20/80 高密度) 提供信息，但在 dlt(5/35 低密度)
+# 上是过拟合历史巧合的噪声。故 dlt/ssq 关闭稀有度与多样性，kl8 保留。
+# 其余规则（时间衰减/水平惩罚/遗漏/最近N期降权）在两个彩种上均无显著正贡献
+# 或贡献微小，保守保留。
+# 通过 models/best_params.json（auto_tune）的 per_type 覆盖可进一步微调。
+LOTTERY_SCORE_PARAMS = {
+    'dlt': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'dlt_back': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'ssq': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'ssq_back': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    # kl8: 稀有度/多样性有效，保留默认（不放覆盖键）
+}
+
+
+def _base_score_params(lottery_type):
+    """返回按彩种校准后的基础评分参数副本（可被 auto_tune 产物覆盖）。"""
+    p = dict(SCORE_PARAMS)
+    p.update(LOTTERY_SCORE_PARAMS.get(lottery_type, {}))
+    return p
+
 
 class PatternLearner:
     """几何图案学习引擎"""
@@ -83,7 +128,7 @@ class PatternLearner:
         print(f"{'='*50}")
 
         # ---- P3c: 自适应窗口 ----
-        P = SCORE_PARAMS
+        P = _base_score_params(self.lottery_type)
         if P['adaptive_window']:
             if 'num_list' in df.columns:
                 # KL8: 用号码数量密度估算熵。快乐8每期开20/80=0.25，
@@ -252,7 +297,7 @@ class PatternLearner:
         if candidates is None:
             candidates = list(range(1, self.num_range + 1))
 
-        P = SCORE_PARAMS
+        P = _base_score_params(self.lottery_type)
         omissions = self._compute_omissions()
         hotness = self._compute_hotness(P['hotness_window'])
 

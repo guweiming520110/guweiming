@@ -707,3 +707,148 @@ if __name__ == "__main__":
     print(f"   成功: {', '.join(ok) if ok else '无'}")
     if failed:
         print(f"   跳过/失败: {', '.join(failed)}")
+
+
+# ==================== 集合预测器（方向2：修复位置独立建模缺陷）====================
+
+class SetNumberPredictor:
+    """号码集合预测器 —— 把"5个位置独立分类"重构为"每个号码是否出现在下期"。
+
+    背景（P2 结构性缺陷）：
+      大乐透/双色球开奖号码是**升序排列且互不重复**的集合，位置 k 实为
+      "第 k 小的号码"（order statistic）。旧 LotteryPredictor 对 front_1..front_5
+      各自独立训练分类器，无排序约束，可能输出"位置3 < 位置2"的矛盾组合。
+
+    本类建模方式：
+      - 对号码池中每个号码 n (1..front_max) 训练一个二分类器，
+        标签 = "号码 n 是否出现在下期开奖"（多标签，集合语义）。
+      - 预测：取概率最高的 k 个号码 → 天然满足"不重复 + 无序集合"。
+      - 特征与标签对齐同主流程：特征行 t 携带 info≤t，标签 = 开奖 t+1（shift(-1)）。
+    """
+
+    def __init__(self, lottery_type='dlt'):
+        self.lottery_type = lottery_type
+        if lottery_type == 'dlt':
+            self.front_pool = 35
+            self.front_count = 5
+            self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5']
+        elif lottery_type == 'ssq':
+            self.front_pool = 33
+            self.front_count = 6
+            self.front_cols = ['front_1', 'front_2', 'front_3', 'front_4', 'front_5', 'front_6']
+        elif lottery_type == 'kl8':
+            self.front_pool = 80
+            self.front_count = 20
+            self.front_cols = None  # kl8 用 num_list
+        else:
+            raise ValueError(f"不支持的彩票类型: {lottery_type}")
+
+        self.models = []          # 每个号码一个二分类器, 索引 = num-1
+        self.scaler = StandardScaler()
+        self.feature_cols = None
+        self._latest_row = None   # 最新一期特征（用于预测下一期）
+
+    def _extract_features(self, df):
+        from feature_engineering import FeatureEngineer
+        from feature_config import get_all_features as _gf
+        fe = FeatureEngineer(df, lottery_type=self.lottery_type)
+        feat = fe.extract_all_features()
+        # 只保留配置里实际生成的特征列（kl8 会缺部分列）
+        cols = [c for c in _gf() if c in feat.columns]
+        return feat[cols].reset_index(drop=True), cols
+
+    def _draw_numbers(self, df_row):
+        """返回某期开奖号码集合。"""
+        if self.lottery_type == 'kl8':
+            return set(df_row['num_list'])
+        return set(int(df_row[c]) for c in self.front_cols)
+
+    def train(self, df, n_estimators=100):
+        """训练每个号码的二分类器。
+
+        df: 原始开奖数据（需含 period + front_* 列 或 num_list）。
+        特征行 t 的标签 = 开奖 t+1 中该号码是否出现（shift(-1) 对齐，防泄漏）。
+        """
+        df = df.sort_values('period').reset_index(drop=True)
+        feat, cols = self._extract_features(df)
+        self.feature_cols = cols
+
+        n = len(feat)
+        if n < 50:
+            raise ValueError(f"数据不足：需要至少50条，当前{len(df)}条")
+
+        # 特征行 t (含 ≤t 信息) 预测开奖 t+1 → 只用前 n-1 行特征
+        X_raw = feat.iloc[:-1].values.astype(float)
+        self.scaler.fit(X_raw)
+        X = self.scaler.transform(X_raw)
+
+        self.models = []
+        for num in range(1, self.front_pool + 1):
+            y = np.zeros(n - 1, dtype=int)
+            for t in range(n - 1):
+                if num in self._draw_numbers(df.iloc[t + 1]):
+                    y[t] = 1
+            # 类别不均衡防御：若正例过少，该号码几乎不出现在样本中，模型退化无害
+            m = RandomForestClassifier(n_estimators=n_estimators, max_depth=8,
+                                       random_state=42, class_weight='balanced_subsample')
+            m.fit(X, y)
+            self.models.append(m)
+
+        # 记录最新一期特征（预测 t+1 用）
+        self._latest_row = feat.iloc[-1:]
+        return self
+
+    def predict_proba_map(self, features_row=None):
+        """返回 {号码: 下期出现概率}。features_row 缺省用最新一期特征。"""
+        if features_row is None:
+            features_row = self._latest_row
+        if features_row is None:
+            raise RuntimeError("缺少最新特征行，请先调用 set_latest(df) 或 train(df)")
+        row = features_row[self.feature_cols].fillna(0).values.reshape(1, -1)
+        row = self.scaler.transform(row)
+        probs = {}
+        for num, m in enumerate(self.models, start=1):
+            probs[num] = float(m.predict_proba(row)[0][1])
+        return probs
+
+    def set_latest(self, df):
+        """从最新数据提取"最新一期"特征行（预测下一期用）。
+
+        加载已保存模型后，_latest_row 不会自动恢复，需由调用方注入最新 df；
+        与旧 LotteryPredictor.set_full_df 的职责一致。
+        """
+        df = df.sort_values('period').reset_index(drop=True)
+        feat, _ = self._extract_features(df)
+        self._latest_row = feat.iloc[-1:]
+        return self
+
+    def predict_topk(self, features_row=None, k=None):
+        """返回概率最高的 k 个号码（有序集合）。"""
+        if k is None:
+            k = self.front_count
+        probs = self.predict_proba_map(features_row)
+        return [n for n, _ in sorted(probs.items(), key=lambda x: -x[1])[:k]]
+
+    def save_models(self, path='models'):
+        import pickle as _p
+        save_path = os.path.join(path, self.lottery_type)
+        os.makedirs(save_path, exist_ok=True)
+        with open(f'{save_path}/set_predictor.pkl', 'wb') as f:
+            _p.dump({
+                'models': self.models,
+                'scaler': self.scaler,
+                'feature_cols': self.feature_cols,
+                'lottery_type': self.lottery_type,
+            }, f)
+        print(f"✅ 集合预测器已保存到 {save_path}/set_predictor.pkl")
+
+    def load_models(self, path='models'):
+        import pickle as _p
+        load_path = os.path.join(path, self.lottery_type)
+        with open(f'{load_path}/set_predictor.pkl', 'rb') as f:
+            data = _p.load(f)
+        self.models = data['models']
+        self.scaler = data['scaler']
+        self.feature_cols = data['feature_cols']
+        self.lottery_type = data['lottery_type']
+        return True
