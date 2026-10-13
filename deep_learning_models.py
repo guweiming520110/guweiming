@@ -22,6 +22,58 @@ except ImportError:  # 允许在没有 tensorflow 的环境下导入本模块
     layers = None
 
 
+# ==================== Windows 非 ASCII 路径兼容（TF 2.x 缺陷规避）====================
+# TF 的 file_io 在处理含中文等非 ASCII 字符的绝对路径时会抛 UnicodeDecodeError
+# （如 G:\数字彩票分析系统\...）。这里提供临时 ASCII 目录中转：
+# 保存 → 写到 tempdir(ASCII) → 拷回真实路径；加载 → 复制到 tempdir 再 load。
+import shutil as _shutil
+import tempfile as _tempfile
+
+
+def _is_ascii(s):
+    try:
+        str(s).encode('ascii')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+class _ascii_staging:
+    """上下文管理器：为含非 ASCII 的路径提供纯 ASCII 临时目录。"""
+
+    def __init__(self, path):
+        self.orig = str(path)
+        # 用 C:/temp（若存在）或系统临时目录，保证 ASCII
+        base = 'C:/temp' if os.path.isdir('C:/temp') else _tempfile.gettempdir()
+        self.target = _tempfile.mkdtemp(prefix='dl_models_', dir=base)
+
+    def commit(self, real_path):
+        """把临时目录内容拷回真实路径（保存用）。"""
+        os.makedirs(real_path, exist_ok=True)
+        for name in os.listdir(self.target):
+            _shutil.copy2(os.path.join(self.target, name), os.path.join(real_path, name))
+        _shutil.rmtree(self.target, ignore_errors=True)
+
+    def cleanup(self):
+        _shutil.rmtree(self.target, ignore_errors=True)
+
+
+def _load_from_staging(path):
+    """若路径含非 ASCII，复制到临时 ASCII 目录并返回临时路径（用完需 cleanup）。
+
+    返回 (实际加载路径, staging对象或None)。
+    """
+    if _is_ascii(path):
+        return path, None
+    st = _ascii_staging(path)
+    try:
+        for name in os.listdir(path):
+            _shutil.copy2(os.path.join(path, name), os.path.join(st.target, name))
+    except OSError:
+        pass
+    return st.target, st
+
+
 class DeepLearningPredictor:
     def __init__(self, sequence_length=10, lottery_type='dlt'):
         self.sequence_length = sequence_length
@@ -355,25 +407,37 @@ class DeepLearningPredictor:
         }
 
     def save_models(self, path='models'):
-        """保存深度学习模型"""
-        os.makedirs(path, exist_ok=True)
+        """保存深度学习模型
 
-        for i, model in enumerate(self.lstm_models_front):
-            model.save(f'{path}/lstm_front_{i}.h5')
-        for i, model in enumerate(self.lstm_models_back):
-            model.save(f'{path}/lstm_back_{i}.h5')
-        for i, model in enumerate(self.transformer_models_front):
-            model.save(f'{path}/transformer_front_{i}.h5')
-        for i, model in enumerate(self.transformer_models_back):
-            model.save(f'{path}/transformer_back_{i}.h5')
+        Windows 兼容修复: TF 2.x 的 file_io 无法处理含非 ASCII 字符的路径
+        （如 G:\数字彩票分析系统\...），会抛 UnicodeDecodeError。
+        若目标路径非 ASCII，先保存到系统临时 ASCII 目录再拷回，保证可用。
+        """
+        # 非 ASCII 路径时用临时目录中转
+        tmp_ctx = _ascii_staging(path) if not _is_ascii(path) else None
+        target = tmp_ctx.target if tmp_ctx else path
+        os.makedirs(target, exist_ok=True)
 
-        with open(f'{path}/dl_config.pkl', 'wb') as f:
-            pickle.dump({'sequence_length': self.sequence_length, 'lottery_type': self.lottery_type}, f)
+        try:
+            for i, model in enumerate(self.lstm_models_front):
+                model.save(f'{target}/lstm_front_{i}.h5')
+            for i, model in enumerate(self.lstm_models_back):
+                model.save(f'{target}/lstm_back_{i}.h5')
+            for i, model in enumerate(self.transformer_models_front):
+                model.save(f'{target}/transformer_front_{i}.h5')
+            for i, model in enumerate(self.transformer_models_back):
+                model.save(f'{target}/transformer_back_{i}.h5')
 
-        # 更新集成权重：ml_models.py 训练 RF/XGB 时会把 lstm/transformer 权重写成 0
-        # （因深度学习需单独训练）。这里训练完成后回填非零权重，否则加载时深度学习模型
-        # 虽被加载(use_deep_learning=True)，却因权重=0 而对融合结果零贡献，等于白训。
-        self._update_ensemble_weights(path)
+            with open(f'{target}/dl_config.pkl', 'wb') as f:
+                pickle.dump({'sequence_length': self.sequence_length, 'lottery_type': self.lottery_type}, f)
+
+            # 更新集成权重：ml_models.py 训练 RF/XGB 时会把 lstm/transformer 权重写成 0
+            # （因深度学习需单独训练）。这里训练完成后回填非零权重，否则加载时深度学习模型
+            # 虽被加载(use_deep_learning=True)，却因权重=0 而对融合结果零贡献，等于白训。
+            self._update_ensemble_weights(target)
+        finally:
+            if tmp_ctx:
+                tmp_ctx.commit(path)  # 把临时目录产物拷回真实路径
 
         print(f"✅ 深度学习模型已保存到 {path}")
 
@@ -415,42 +479,52 @@ class DeepLearningPredictor:
               f"Transformer={new_weights['transformer_weight']}")
 
     def load_models(self, path='models'):
-        """加载深度学习模型"""
+        """加载深度学习模型
+
+        Windows 兼容修复: 非 ASCII 路径时先复制到临时 ASCII 目录再 load。
+        """
         if not os.path.exists(f'{path}/dl_config.pkl'):
             print("未找到深度学习模型配置")
             return False
 
-        with open(f'{path}/dl_config.pkl', 'rb') as f:
-            config = pickle.load(f)
-            self.sequence_length = config['sequence_length']
-            if 'lottery_type' in config:
-                self.lottery_type = config['lottery_type']
-        # S1 修复: 恢复彩种后重建号码范围，避免沿用 dlt 默认值
-        self._set_ranges()
+        # 非 ASCII 路径中转（用绝对路径判断——相对路径看似 ASCII，TF 内部仍会转成中文绝对路径）
+        abs_path = os.path.abspath(path)
+        load_path, staging = _load_from_staging(abs_path) if not _is_ascii(abs_path) else (path, None)
+        try:
+            with open(f'{load_path}/dl_config.pkl', 'rb') as f:
+                config = pickle.load(f)
+                self.sequence_length = config['sequence_length']
+                if 'lottery_type' in config:
+                    self.lottery_type = config['lottery_type']
+            # S1 修复: 恢复彩种后重建号码范围，避免沿用 dlt 默认值
+            self._set_ranges()
 
-        self.lstm_models_front = []
-        self.lstm_models_back = []
-        self.transformer_models_front = []
-        self.transformer_models_back = []
+            self.lstm_models_front = []
+            self.lstm_models_back = []
+            self.transformer_models_front = []
+            self.transformer_models_back = []
 
-        num_front = 5 if self.lottery_type == 'dlt' else 6
-        num_back = 2 if self.lottery_type == 'dlt' else 1
+            num_front = 5 if self.lottery_type == 'dlt' else 6
+            num_back = 2 if self.lottery_type == 'dlt' else 1
 
-        for i in range(num_front):
-            if os.path.exists(f'{path}/lstm_front_{i}.h5'):
-                self.lstm_models_front.append(keras.models.load_model(f'{path}/lstm_front_{i}.h5'))
+            for i in range(num_front):
+                if os.path.exists(f'{load_path}/lstm_front_{i}.h5'):
+                    self.lstm_models_front.append(keras.models.load_model(f'{load_path}/lstm_front_{i}.h5'))
 
-        for i in range(num_back):
-            if os.path.exists(f'{path}/lstm_back_{i}.h5'):
-                self.lstm_models_back.append(keras.models.load_model(f'{path}/lstm_back_{i}.h5'))
+            for i in range(num_back):
+                if os.path.exists(f'{load_path}/lstm_back_{i}.h5'):
+                    self.lstm_models_back.append(keras.models.load_model(f'{load_path}/lstm_back_{i}.h5'))
 
-        for i in range(num_front):
-            if os.path.exists(f'{path}/transformer_front_{i}.h5'):
-                self.transformer_models_front.append(keras.models.load_model(f'{path}/transformer_front_{i}.h5'))
+            for i in range(num_front):
+                if os.path.exists(f'{load_path}/transformer_front_{i}.h5'):
+                    self.transformer_models_front.append(keras.models.load_model(f'{load_path}/transformer_front_{i}.h5'))
 
-        for i in range(num_back):
-            if os.path.exists(f'{path}/transformer_back_{i}.h5'):
-                self.transformer_models_back.append(keras.models.load_model(f'{path}/transformer_back_{i}.h5'))
+            for i in range(num_back):
+                if os.path.exists(f'{load_path}/transformer_back_{i}.h5'):
+                    self.transformer_models_back.append(keras.models.load_model(f'{load_path}/transformer_back_{i}.h5'))
+        finally:
+            if staging:
+                staging.cleanup()
 
         if self.lstm_models_front and self.transformer_models_front:
             print(f"✅ 深度学习模型已加载 (序列长度={self.sequence_length}, 彩种={self.lottery_type})")

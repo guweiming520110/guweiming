@@ -162,7 +162,7 @@ def send_dingtalk_message(payload: dict) -> bool:
     return False
 
 
-def send_text(content: str, at_mobiles: list | None = None, is_at_all: bool = False) -> bool:
+def send_text(content: str, at_mobiles: Optional[list] = None, is_at_all: bool = False) -> bool:
     """发送 text 类型消息"""
     payload = {
         "msgtype": "text",
@@ -172,7 +172,7 @@ def send_text(content: str, at_mobiles: list | None = None, is_at_all: bool = Fa
     return send_dingtalk_message(payload)
 
 
-def send_markdown(title: str, text: str, at_mobiles: list | None = None, is_at_all: bool = False) -> bool:
+def send_markdown(title: str, text: str, at_mobiles: Optional[list] = None, is_at_all: bool = False) -> bool:
     """发送 markdown 类型消息
     钉钉机器人限制：消息内容不能超过 5000 字符，超出会自动截断
     """
@@ -572,7 +572,7 @@ def _ensure_table(conn=None):
 
 
 def save_prediction(lottery_type: str, target_period: str,
-                    front_numbers: list, back_numbers: list | None = None) -> int:
+                    front_numbers: list, back_numbers: Optional[list] = None) -> int:
     """
     保存预测记录到数据库（同彩种+同期号已存在时更新，否则插入）
 
