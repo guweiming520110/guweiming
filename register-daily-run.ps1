@@ -4,8 +4,8 @@
 #   powershell -ExecutionPolicy Bypass -File register-daily-run.ps1
 #
 # 说明:
-#   - 每天 21:00 运行 run_all.py（三大彩种开奖日：dlt 周一/三/六,
-#     ssq 周二/四/日, kl8 每天——21:00 后各彩种当日已开奖完毕）
+#   - 每天 11:35 运行 run_all.py（11:35 时 kl8 当日已开奖，
+#     dlt/ssq 若当日有开奖也已结束）
 #   - 使用 tensorflow conda 环境 python（F:\anaconda3\envs\tensorflow）
 #   - 删除任务: schtasks /Delete /TN "数字彩票每日运行" /F
 # ============================================================
@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = 'G:\数字彩票分析系统\Chao-Ji-Da-Le-Tou-AIYu-Ce'
 $PythonExe  = 'F:\anaconda3\envs\tensorflow\python.exe'
 $TaskName   = '数字彩票每日运行'
-$Time       = '21:00'
+$Time       = '11:35'
 
 if (-not (Test-Path $PythonExe)) {
     # 回退到系统 python

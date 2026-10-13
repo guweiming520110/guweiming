@@ -74,6 +74,7 @@ def objective(trial, lottery_type='dlt', backtest_n=20):
         （真正的留出集，与实际预测目标同向）。
     """
     from pattern_learner.core import PatternLearner
+    from pattern_learner.core import SCORE_PARAMS
 
     # 从当前参数复制
     params = dict(SCORE_PARAMS)
