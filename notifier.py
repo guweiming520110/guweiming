@@ -5,6 +5,7 @@
 推送预测结果、验证结果、准确率统计到钉钉群
 """
 
+import re
 import json
 import time
 import hmac
@@ -13,21 +14,38 @@ import base64
 import urllib.request
 import urllib.parse
 import sqlite3
-from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+from db_utils import get_connection
+from config import (
+    DINGTALK_TOKEN, DINGTALK_SECRET, DINGTALK_TIMEOUT, DINGTALK_MAX_RETRIES,
+    DINGTALK_RATE_LIMIT, DINGTALK_RATE_WINDOW,
+)
+from logger import log
+
 # ==================== 配置 ====================
+
+# 钉钉凭据统一从 config 读取（config 已加载 .env / 系统环境变量）：
+#   DINGTALK_TOKEN  —— 机器人 access_token
+#   DINGTALK_SECRET —— 机器人加签 SECRET
+# 部署时通过 .env 文件或系统环境变量注入，参见项目根目录 .env.example
+_ACCESS_TOKEN = DINGTALK_TOKEN
+SECRET = DINGTALK_SECRET
+
+# 调试：打印凭据摘要（仅首次加载时）
+if not _ACCESS_TOKEN or not SECRET:
+    import warnings
+    warnings.warn("钉钉凭据未配置，请设置环境变量 DINGTALK_TOKEN 和 DINGTALK_SECRET")
+else:
+    pass  # 凭据已配置，不打印摘要
 
 WEBHOOK_URL = (
     "https://oapi.dingtalk.com/robot/send"
-    "?access_token=e41fbb639c62f85b3366168195a5e6e1f546080318cbd9fd6801ccbdb8ddd45d"
+    f"?access_token={_ACCESS_TOKEN}"
 )
-SECRET = "SECb6a3cf1380e75c515abcb074b3ff5d56877372d2d28bddb862e12e71d973b757"
 
-BASE_DIR = Path(__file__).resolve().parent
-ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
+# DB_PATH 统一取自 config（历史路径，不再在此重复定义）
 
 # ==================== 钉钉签名与发送 ====================
 
@@ -48,55 +66,103 @@ def _build_url(timestamp: int) -> str:
     return f"{WEBHOOK_URL}&timestamp={timestamp}&sign={urllib.parse.quote(sign)}"
 
 
-# 最近一次发送内容缓存（防重复）
+# 最近一次发送内容缓存（防重复）。注意：只在确认送达成功后才写入，
+# 否则一次网络失败会让后续重试被去重逻辑误判为"已发送成功"。
 _last_send_cache = {'time': 0, 'content': ''}
+
+# 最近发送时间戳，用于钉钉 20 条/分钟的机器人限流
+_send_times = []
+
+
+def _dedup_key(payload: dict) -> str:
+    """生成去重键。
+
+    直接 str(payload) 会因消息里含 datetime.now() 生成的时间戳而永远不相等，
+    导致去重完全失效；这里把时间串统一替换为占位符。
+    """
+    s = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return re.sub(r'\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?', '<TS>', s)
+
+
+def _wait_for_rate_limit():
+    """钉钉机器人限流：同一机器人每分钟最多 20 条，超出则等待窗口滑出。"""
+    global _send_times
+    now = time.time()
+    _send_times = [t for t in _send_times if now - t < DINGTALK_RATE_WINDOW]
+    if len(_send_times) >= DINGTALK_RATE_LIMIT:
+        wait = DINGTALK_RATE_WINDOW - (now - _send_times[0]) + 1
+        if wait > 0:
+            log.warning("钉钉限流：每分钟最多 %d 条，等待 %.0f 秒",
+                        DINGTALK_RATE_LIMIT, wait)
+            time.sleep(wait)
+        now = time.time()
+        _send_times = [t for t in _send_times if now - t < DINGTALK_RATE_WINDOW]
 
 
 def send_dingtalk_message(payload: dict) -> bool:
     """
-    发送消息到钉钉（带 10 秒去重）
+    发送消息到钉钉（带 10 秒去重、限流等待、错误分类与重试）
 
     参数:
         payload: 钉钉消息体 (dict)
 
     返回:
-        bool 是否发送成功
+        bool 是否发送成功（去重命中返回 True，因为上一次确实已送达）
     """
-    import time as time_module
-    now = time_module.time()
-    content_str = str(payload)
-
-    # 10 秒内相同内容不发第二次
-    if now - _last_send_cache['time'] < 10 and _last_send_cache['content'] == content_str:
-        print(f"  ⏭️ 钉钉去重: 10秒内相同消息已发送，跳过")
-        return True
-
-    _last_send_cache['time'] = now
-    _last_send_cache['content'] = content_str
-
-    timestamp = int(time_module.time() * 1000)
-    url = _build_url(timestamp)
-
-    data = json.dumps(payload).encode('utf-8')
-    headers = {
-        'Content-Type': 'application/json; charset=utf-8',
-    }
-
-    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-            if result.get('errcode') == 0:
-                return True
-            else:
-                print(f"  钉钉发送失败: {result}")
-                return False
-    except Exception as e:
-        print(f"  钉钉请求异常: {e}")
+    # 空凭据快速失败：未配置 token/secret 时不发起网络请求，也不做无谓的
+    # 3 次重试 + 限流等待，直接返回失败（查询/统计等功能不受影响）。
+    if not _ACCESS_TOKEN or not SECRET:
+        log.warning("钉钉未配置 token/secret，跳过推送")
         return False
 
+    now = time.time()
+    dedup_key = _dedup_key(payload)
 
-def send_text(content: str, at_mobiles: list = None, is_at_all: bool = False) -> bool:
+    # 10 秒内相同内容不发第二次
+    if now - _last_send_cache['time'] < 10 and _last_send_cache['content'] == dedup_key:
+        print("  ⏭️ 钉钉去重: 10秒内相同消息已发送，跳过")
+        return True
+
+    data = json.dumps(payload).encode('utf-8')
+    headers = {'Content-Type': 'application/json; charset=utf-8'}
+
+    for attempt in range(DINGTALK_MAX_RETRIES):
+        _wait_for_rate_limit()
+        timestamp = int(time.time() * 1000)
+        req = urllib.request.Request(_build_url(timestamp), data=data,
+                                     headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=DINGTALK_TIMEOUT) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+            errcode = result.get('errcode')
+            if errcode == 0:
+                # 仅在确认送达后写缓存
+                _last_send_cache['time'] = time.time()
+                _last_send_cache['content'] = dedup_key
+                _send_times.append(time.time())
+                return True
+            if errcode == 130101:
+                # 发送过快/限流，退避后重试
+                log.warning("钉钉限流(errcode=130101)，60 秒后重试")
+                time.sleep(60)
+                continue
+            if errcode == 310000:
+                log.error("钉钉加签校验失败(310000)，请检查 DINGTALK_SECRET: %s", result)
+                return False
+            if errcode == 300001:
+                log.error("钉钉 access_token 无效(300001)，请检查 DINGTALK_TOKEN: %s", result)
+                return False
+            log.error("钉钉发送失败: %s", result)
+            return False
+        except Exception as e:
+            log.warning("钉钉请求异常(第%d/%d次): %s",
+                        attempt + 1, DINGTALK_MAX_RETRIES, e)
+            if attempt < DINGTALK_MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+    return False
+
+
+def send_text(content: str, at_mobiles: Optional[list] = None, is_at_all: bool = False) -> bool:
     """发送 text 类型消息"""
     payload = {
         "msgtype": "text",
@@ -106,7 +172,7 @@ def send_text(content: str, at_mobiles: list = None, is_at_all: bool = False) ->
     return send_dingtalk_message(payload)
 
 
-def send_markdown(title: str, text: str, at_mobiles: list = None, is_at_all: bool = False) -> bool:
+def send_markdown(title: str, text: str, at_mobiles: Optional[list] = None, is_at_all: bool = False) -> bool:
     """发送 markdown 类型消息
     钉钉机器人限制：消息内容不能超过 5000 字符，超出会自动截断
     """
@@ -180,15 +246,15 @@ def format_prediction_message(lottery_type: str, front_preds, back_preds=None,
         lines.append(f"**参考最新开奖期号**: {period}（已开奖）")
     lines.append("")
 
+    # 前/后区配置与彩种无关地先赋值，供后续汇总分支安全引用（kl8 不会用到后区值）
+    front_cnt = 5 if lottery_type == 'dlt' else 6
+    back_cnt = 2 if lottery_type == 'dlt' else 1
+    front_name = '前区' if lottery_type == 'dlt' else '红球'
+    back_name = '后区' if lottery_type == 'dlt' else '蓝球'
     if lottery_type == 'kl8':
         _format_kl8_prediction_message(lines, front_preds, kl8_combos)
     else:
         # dlt/ssq：前区 + 后区
-        front_cnt = 5 if lottery_type == 'dlt' else 6
-        back_cnt = 2 if lottery_type == 'dlt' else 1
-        front_name = '前区' if lottery_type == 'dlt' else '红球'
-        back_name = '后区' if lottery_type == 'dlt' else '蓝球'
-
         lines.append(f"### 📋 预测{front_name} Top-{front_cnt}")
         for rank, (num, score, detail) in enumerate(front_preds[:front_cnt], 1):
             pattern_str = _summarize_patterns(detail)
@@ -266,6 +332,7 @@ def format_verification_message(lottery_type: str, predicted_front: list, predic
     if lottery_type == 'kl8':
         front_name = '号码'
         front_cnt = 20
+        back_name = ''  # kl8 无后区，verify 分支已用 `if lottery_type != 'kl8'` 守卫
         front_hit = len(verified_front)
         back_hit = 0
         total_hit = front_hit
@@ -324,9 +391,15 @@ def format_verification_message(lottery_type: str, predicted_front: list, predic
     if prize_result.get('is_winning'):
         lines.append(f"")
         lines.append(f"> 🎉 **恭喜中奖！{prize_result.get('level', '')}**")
-    elif lottery_type == 'kl8' and front_hit >= 10:
+    elif lottery_type == 'kl8' and prize_result.get('match_rate'):
+        # 旧写法里 is_winning 的定义就是 match_count>=10，导致该 elif 永远不可达。
+        # 且 kl8 预测的是 20 个号码，"命中 N 个"并不等于某一注选十中奖，
+        # 因此这里只给命中率评价，真实中奖由 send_kl8_verification 推送。
         lines.append(f"")
-        lines.append(f"> 🎉 **命中率 {prize_result.get('match_rate', 0)}%，表现不错！**")
+        lines.append(
+            f"> 📈 **命中率 {prize_result.get('match_rate')}%"
+            f"（{prize_result.get('level', '')}）**"
+        )
 
     lines.append("")
     lines.append(f"> **综合命中率**: {total_hit}/{total_cnt} = **{total_rate:.1f}%**")
@@ -366,8 +439,11 @@ def format_stats_message(stats: dict) -> str:
             lines.append(f"- {s['front_name']}命中率: **{s['front_hit_rate']:.1f}%** ({s['front_hit']}/{s['front_total']})")
         if s.get('back_hit_rate') is not None:
             lines.append(f"- {s['back_name']}命中率: **{s['back_hit_rate']:.1f}%** ({s['back_hit']}/{s['back_total']})")
-        if s.get('avg_top10_hit') is not None:
-            lines.append(f"- Top10 平均命中: **{s['avg_top10_hit']:.2f}**")
+        # L5 修复: 兼容旧字段名；kl8 显示为"20码平均命中个数"，dlt/ssq 显示"Top10 平均命中"
+        avg_key = 'avg_hit_count' if 'avg_hit_count' in s else 'avg_top10_hit'
+        if s.get(avg_key) is not None:
+            label = '20码平均命中个数' if avg_key == 'avg_hit_count' else 'Top10 平均命中'
+            lines.append(f"- {label}: **{s[avg_key]:.2f}**")
         lines.append("")
 
     lines.append("---")
@@ -456,19 +532,14 @@ def _extract_backtest_from_report(report: str) -> list:
 # ==================== 数据库操作 ====================
 
 
-def _get_conn():
-    """获取数据库连接"""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+# 统一走 db_utils.get_connection() 管理连接（自动 WAL + busy_timeout + 事务），
+# 不再用裸 sqlite3.connect。查询功能（_ensure_table/get_accuracy_stats 等）
+# 不依赖钉钉凭据，即使未配置 token/secret 也可正常使用。
 
 
 def _ensure_table(conn=None):
-    """确保 prediction_records 表存在"""
-    should_close = conn is None
-    if conn is None:
-        conn = _get_conn()
-    conn.execute("""
+    """确保 prediction_records 表存在；传入 conn 时复用该连接（兼容批量写入场景）"""
+    ddl = """
         CREATE TABLE IF NOT EXISTS prediction_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             lottery_type VARCHAR(20) NOT NULL,
@@ -491,58 +562,60 @@ def _ensure_table(conn=None):
             front_match_count INTEGER NOT NULL DEFAULT 0,
             back_match_count INTEGER NOT NULL DEFAULT 0
         )
-    """)
-    conn.commit()
-    if should_close:
-        conn.close()
+    """
+    if conn is not None:
+        conn.execute(ddl)
+        conn.commit()
+        return
+    with get_connection() as new_conn:  # 独立连接：退出时自动提交
+        new_conn.execute(ddl)
 
 
 def save_prediction(lottery_type: str, target_period: str,
-                    front_numbers: list, back_numbers: list = None) -> int:
+                    front_numbers: list, back_numbers: Optional[list] = None) -> int:
     """
     保存预测记录到数据库（同彩种+同期号已存在时更新，否则插入）
 
     返回:
         新记录或已有记录的 id
     """
-    _ensure_table()
-    conn = _get_conn()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    front_str = ','.join(str(n) for n in front_numbers)
-    back_str = ','.join(str(n) for n in (back_numbers or []))
+    with get_connection() as conn:
+        _ensure_table(conn)  # 复用同一连接，避免双连接竞争
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        front_str = ','.join(str(n) for n in front_numbers)
+        back_str = ','.join(str(n) for n in (back_numbers or []))
 
-    # 先查找是否已存在同一彩种+同期号的记录
-    cur = conn.execute(
-        """SELECT id FROM prediction_records 
-           WHERE lottery_type=? AND target_period=?
-           ORDER BY id DESC LIMIT 1""",
-        (lottery_type, target_period)
-    )
-    existing = cur.fetchone()
-
-    if existing:
-        # 更新已有记录（保留验证信息）
-        conn.execute(
-            """UPDATE prediction_records SET
-               predict_time=?, front_numbers=?, back_numbers=?, play_type='几何图案预测'
-               WHERE id=?""",
-            (now_str, front_str, back_str, existing[0])
+        # 先查找是否已存在同一彩种+同期号的记录
+        cur = conn.execute(
+            """SELECT id FROM prediction_records
+               WHERE lottery_type=? AND target_period=?
+               ORDER BY id DESC LIMIT 1""",
+            (lottery_type, target_period)
         )
-        record_id = existing[0]
-    else:
-        # 插入新记录
-        conn.execute(
-            """INSERT INTO prediction_records 
-               (lottery_type, predict_time, target_period, play_type,
-                front_numbers, back_numbers)
-               VALUES (?, ?, ?, '几何图案预测', ?, ?)""",
-            (lottery_type, now_str, target_period, front_str, back_str)
-        )
-        record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        existing = cur.fetchone()
 
-    conn.commit()
-    conn.close()
-    return record_id
+        if existing:
+            # 更新已有记录（保留验证信息）
+            conn.execute(
+                """UPDATE prediction_records SET
+                   predict_time=?, front_numbers=?, back_numbers=?, play_type='几何图案预测'
+                   WHERE id=?""",
+                (now_str, front_str, back_str, existing[0])
+            )
+            record_id = existing[0]
+        else:
+            # 插入新记录
+            conn.execute(
+                """INSERT INTO prediction_records
+                   (lottery_type, predict_time, target_period, play_type,
+                    front_numbers, back_numbers)
+                   VALUES (?, ?, ?, '几何图案预测', ?, ?)""",
+                (lottery_type, now_str, target_period, front_str, back_str)
+            )
+            record_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # with 块正常退出时自动 commit
+        return record_id
 
 
 def save_verification(lottery_type: str, target_period: str,
@@ -556,60 +629,55 @@ def save_verification(lottery_type: str, target_period: str,
     """
     from prize_calculator import get_prize_level_string
 
-    _ensure_table()
-    conn = _get_conn()
+    with get_connection(sqlite3.Row) as conn:
+        _ensure_table(conn)  # 复用同一连接
 
-    front_cnt = 5 if lottery_type == 'dlt' else 6
-    actual_f_str = ','.join(str(n) for n in actual_front)
-    actual_b_str = ','.join(str(n) for n in actual_back)
+        actual_f_str = ','.join(str(n) for n in actual_front)
+        actual_b_str = ','.join(str(n) for n in actual_back)
 
-    # 计算奖级
-    match_level = get_prize_level_string(
-        lottery_type, len(front_match), len(back_match)
-    )
-
-    # 查找匹配的预测记录
-    cur = conn.execute(
-        """SELECT id FROM prediction_records
-           WHERE lottery_type=? AND target_period=?
-           AND front_numbers=?
-           ORDER BY id DESC LIMIT 1""",
-        (lottery_type, target_period, front_numbers)
-    )
-    row = cur.fetchone()
-
-    if row:
-        conn.execute(
-            """UPDATE prediction_records SET
-               actual_front=?, actual_back=?,
-               is_matched=?,
-               match_level=?,
-               front_match_count=?, back_match_count=?
-               WHERE id=?""",
-            (actual_f_str, actual_b_str,
-             1 if front_match or back_match else 0,
-             match_level,
-             len(front_match), len(back_match),
-             row['id'])
+        # 计算奖级
+        match_level = get_prize_level_string(
+            lottery_type, len(front_match), len(back_match)
         )
-        conn.commit()
-        conn.close()
-        return True
-    conn.close()
-    return False
+
+        # 查找匹配的预测记录
+        cur = conn.execute(
+            """SELECT id FROM prediction_records
+               WHERE lottery_type=? AND target_period=?
+               AND front_numbers=?
+               ORDER BY id DESC LIMIT 1""",
+            (lottery_type, target_period, front_numbers)
+        )
+        row = cur.fetchone()
+
+        if row:
+            conn.execute(
+                """UPDATE prediction_records SET
+                   actual_front=?, actual_back=?,
+                   is_matched=?,
+                   match_level=?,
+                   front_match_count=?, back_match_count=?
+                   WHERE id=?""",
+                (actual_f_str, actual_b_str,
+                 1 if front_match or back_match else 0,
+                 match_level,
+                 len(front_match), len(back_match),
+                 row['id'])
+            )
+            return True  # with 块正常退出时自动 commit
+        return False
 
 
 def get_pending_verifications() -> list:
     """获取尚未验证的预测记录"""
     _ensure_table()
-    conn = _get_conn()
-    cur = conn.execute(
-        """SELECT * FROM prediction_records 
-           WHERE (actual_front IS NULL OR actual_front = '')
-           ORDER BY predict_time DESC"""
-    )
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
+    with get_connection(sqlite3.Row, commit=False) as conn:
+        cur = conn.execute(
+            """SELECT * FROM prediction_records
+               WHERE (actual_front IS NULL OR actual_front = '')
+               ORDER BY predict_time DESC"""
+        )
+        rows = [dict(r) for r in cur.fetchall()]
     return rows
 
 
@@ -621,67 +689,68 @@ def get_accuracy_stats() -> dict:
         { 'dlt': {...}, 'ssq': {...}, 'kl8': {...} }
     """
     _ensure_table()
-    conn = _get_conn()
-    stats = {}
+    with get_connection(commit=False) as conn:
+        stats = {}
 
-    for lt in ['dlt', 'ssq', 'kl8']:
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM prediction_records WHERE lottery_type=?",
-            (lt,)
-        )
-        total = cur.fetchone()[0]
+        for lt in ['dlt', 'ssq', 'kl8']:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM prediction_records WHERE lottery_type=?",
+                (lt,)
+            )
+            total = cur.fetchone()[0]
 
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM prediction_records WHERE lottery_type=? AND actual_front != ''",
-            (lt,)
-        )
-        verified = cur.fetchone()[0]
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM prediction_records WHERE lottery_type=? AND actual_front != ''",
+                (lt,)
+            )
+            verified = cur.fetchone()[0]
 
-        entry = {
-            'total': total,
-            'verified': verified,
-        }
+            entry = {
+                'total': total,
+                'verified': verified,
+            }
 
-        if lt == 'kl8':
-            entry['front_name'] = '号码'
-            entry['back_name'] = None
-            if verified > 0:
-                cur = conn.execute(
-                    """SELECT front_match_count FROM prediction_records 
-                       WHERE lottery_type=? AND actual_front != ''""",
-                    (lt,)
-                )
-                hits = [r[0] for r in cur.fetchall()]
-                entry['front_hit'] = sum(hits)
-                entry['front_total'] = len(hits) * 20  # kl8 draws 20 numbers
-                entry['front_hit_rate'] = (sum(hits) / (len(hits) * 20)) * 100 if hits else 0
-                entry['avg_top10_hit'] = sum(hits) / len(hits) if hits else 0
-        else:
-            front_cnt = 5 if lt == 'dlt' else 6
-            back_cnt = 2 if lt == 'dlt' else 1
-            entry['front_name'] = '前区' if lt == 'dlt' else '红球'
-            entry['back_name'] = '后区' if lt == 'dlt' else '蓝球'
+            if lt == 'kl8':
+                entry['front_name'] = '号码'
+                entry['back_name'] = None
+                if verified > 0:
+                    cur = conn.execute(
+                        """SELECT front_match_count FROM prediction_records
+                           WHERE lottery_type=? AND actual_front != ''""",
+                        (lt,)
+                    )
+                    hits = [r[0] for r in cur.fetchall()]
+                    entry['front_hit'] = sum(hits)
+                    entry['front_total'] = len(hits) * 20  # kl8 draws 20 numbers
+                    entry['front_hit_rate'] = (sum(hits) / (len(hits) * 20)) * 100 if hits else 0
+                    # L5 修复: 原字段名 avg_top10_hit 与 dlt/ssq 的"Top10命中"语义混淆，
+                    # 实为"20码平均命中个数"，改名并补充说明字段。
+                    entry['avg_hit_count'] = sum(hits) / len(hits) if hits else 0
+            else:
+                front_cnt = 5 if lt == 'dlt' else 6
+                back_cnt = 2 if lt == 'dlt' else 1
+                entry['front_name'] = '前区' if lt == 'dlt' else '红球'
+                entry['back_name'] = '后区' if lt == 'dlt' else '蓝球'
 
-            if verified > 0:
-                cur = conn.execute(
-                    """SELECT front_match_count, back_match_count FROM prediction_records 
-                       WHERE lottery_type=? AND actual_front != ''""",
-                    (lt,)
-                )
-                rows = cur.fetchall()
-                f_hits = sum(r[0] for r in rows)
-                b_hits = sum(r[1] for r in rows)
-                entry['front_hit'] = f_hits
-                entry['front_total'] = len(rows) * front_cnt
-                entry['front_hit_rate'] = (f_hits / (len(rows) * front_cnt)) * 100 if rows else 0
-                entry['back_hit'] = b_hits
-                entry['back_total'] = len(rows) * back_cnt
-                entry['back_hit_rate'] = (b_hits / (len(rows) * back_cnt)) * 100 if rows else 0
+                if verified > 0:
+                    cur = conn.execute(
+                        """SELECT front_match_count, back_match_count FROM prediction_records
+                           WHERE lottery_type=? AND actual_front != ''""",
+                        (lt,)
+                    )
+                    rows = cur.fetchall()
+                    f_hits = sum(r[0] for r in rows)
+                    b_hits = sum(r[1] for r in rows)
+                    entry['front_hit'] = f_hits
+                    entry['front_total'] = len(rows) * front_cnt
+                    entry['front_hit_rate'] = (f_hits / (len(rows) * front_cnt)) * 100 if rows else 0
+                    entry['back_hit'] = b_hits
+                    entry['back_total'] = len(rows) * back_cnt
+                    entry['back_hit_rate'] = (b_hits / (len(rows) * back_cnt)) * 100 if rows else 0
 
-        stats[lt] = entry
+            stats[lt] = entry
 
-    conn.close()
-    return stats
+        return stats
 
 
 # ==================== 发送快捷方法 ====================
@@ -731,8 +800,7 @@ def format_kl8_verification_message(kl8_combos: dict, actual_nums: list,
         actual_nums: 实际开奖号码列表
         target_period: 目标期号
     """
-    from prize_calculator import (_fmt_nums, verify_kl8_combinations,
-                                   get_kl8_sh10_prize)
+    from prize_calculator import (_fmt_nums, verify_kl8_combinations)
 
     verified = verify_kl8_combinations(kl8_combos, actual_nums)
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -843,8 +911,7 @@ def test_connection() -> bool:
     msg = (
         "## ✅ 钉钉推送测试\n\n"
         f"**数字彩票AI分析系统** 钉钉推送功能连接测试\n\n"
-        f"- 测试时间: {now_str}\n"
-        f"- 系统路径: {BASE_DIR}\n\n"
+        f"- 测试时间: {now_str}\n\n"
         "---\n"
         "*如果收到此消息，说明钉钉推送配置正确 ✅*"
     )
@@ -872,23 +939,22 @@ if __name__ == '__main__':
 
     if args.repush_verify:
         print("开始重推所有验证结果...")
-        conn = _get_conn()
-        cur = conn.execute(
-            """SELECT * FROM prediction_records
-               WHERE actual_front IS NOT NULL AND actual_front != ''
-               ORDER BY target_period DESC"""
-        )
-        if args.lottery_type:
-            # 只重推指定彩种
+        with get_connection(sqlite3.Row, commit=False) as conn:
             cur = conn.execute(
                 """SELECT * FROM prediction_records
                    WHERE actual_front IS NOT NULL AND actual_front != ''
-                   AND lottery_type = ?
-                   ORDER BY target_period DESC""",
-                (args.lottery_type,)
+                   ORDER BY target_period DESC"""
             )
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+            if args.lottery_type:
+                # 只重推指定彩种
+                cur = conn.execute(
+                    """SELECT * FROM prediction_records
+                       WHERE actual_front IS NOT NULL AND actual_front != ''
+                       AND lottery_type = ?
+                       ORDER BY target_period DESC""",
+                    (args.lottery_type,)
+                )
+            rows = [dict(r) for r in cur.fetchall()]
         print(f"找到 {len(rows)} 条已验证记录")
         success = 0
         failed = 0
@@ -918,8 +984,7 @@ if __name__ == '__main__':
                 else:
                     print("❌ 失败")
                     failed += 1
-                # 间隔1秒避免钉钉限流
-                import time
+                # 间隔1秒避免钉钉限流（time 已在模块顶部导入，无需循环内重复导入）
                 time.sleep(1)
             except Exception as e:
                 print(f"⚠️ 异常: {e}")

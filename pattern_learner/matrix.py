@@ -6,7 +6,6 @@
 """
 
 import numpy as np
-import pandas as pd
 
 
 class LotteryMatrix:
@@ -40,8 +39,10 @@ class LotteryMatrix:
             raise ValueError(f"Unknown type: {lottery_type}")
 
         self.num_range = self.max_num - self.min_num + 1
-        self.matrix = None  # (periods, numbers)
-        self.periods = None
+        # 用空矩阵占位（而非 None），避免下标/属性访问被类型检查器判定为对 None 操作；
+        # build_* 方法会填充真实数据，未构建时按空矩阵安全处理
+        self.matrix = np.zeros((0, self.max_num + 1), dtype=bool)
+        self.periods = np.array([], dtype=object)
         self.n_periods = 0
 
     def build_from_dlt(self, df, num_periods=None):
@@ -57,7 +58,10 @@ class LotteryMatrix:
         self.periods = data['period'].astype(str).values
 
         for i in range(self.n_periods):
-            for col in [f'front_{k}' for k in range(1, 6)]:
+            # H4 修复: 用 self.count 驱动列数，替代硬编码 range(1,6)，与配置解耦
+            for col in [f'front_{k}' for k in range(1, self.count + 1)]:
+                if col not in data.columns:
+                    continue
                 n = int(data.iloc[i][col])
                 if 1 <= n <= self.max_num:
                     self.matrix[i][n] = True
@@ -77,7 +81,10 @@ class LotteryMatrix:
         self.periods = data['period'].astype(str).values
 
         for i in range(self.n_periods):
-            for col in [f'back_{k}' for k in range(1, 3)]:
+            # H4 修复: 用 self.count 驱动列数，替代硬编码 range(1,3)
+            for col in [f'back_{k}' for k in range(1, self.count + 1)]:
+                if col not in data.columns:
+                    continue
                 n = int(data.iloc[i][col])
                 if 1 <= n <= self.max_num:
                     self.matrix[i][n] = True
@@ -119,7 +126,10 @@ class LotteryMatrix:
         self.periods = data['period'].astype(str).values
 
         for i in range(self.n_periods):
-            for col in [f'front_{k}' for k in range(1, 7)]:
+            # H4 修复: 用 self.count 驱动列数，替代硬编码 range(1,7)
+            for col in [f'front_{k}' for k in range(1, self.count + 1)]:
+                if col not in data.columns:
+                    continue
                 n = int(data.iloc[i][col])
                 if 1 <= n <= self.max_num:
                     self.matrix[i][n] = True
@@ -138,9 +148,13 @@ class LotteryMatrix:
         self.periods = data['period'].astype(str).values
 
         for i in range(self.n_periods):
-            n = int(data.iloc[i]['back_1'])
-            if 1 <= n <= self.max_num:
-                self.matrix[i][n] = True
+            # H4 修复: 用 self.count 驱动列数，替代只取 back_1 的硬编码
+            for col in [f'back_{k}' for k in range(1, self.count + 1)]:
+                if col not in data.columns:
+                    continue
+                n = int(data.iloc[i][col])
+                if 1 <= n <= self.max_num:
+                    self.matrix[i][n] = True
         return self
 
     def get_latest_row(self):
@@ -168,9 +182,34 @@ class LotteryMatrix:
         """
         if not (1 <= candidate_num <= self.max_num):
             return None
+        # C1 修复: 空矩阵(未训练)时退化为不可加，避免 matrix[0] 越界崩溃
+        if self.n_periods == 0:
+            return None
         new_matrix = self.matrix.copy()
         new_matrix[0][candidate_num] = True
         return new_matrix
+
+    def add_candidate_inplace(self, candidate_num):
+        """
+        原地添加候选号码到第0行，返回是否成功
+        性能优化：避免每个候选号码都复制整个矩阵
+        """
+        if not (1 <= candidate_num <= self.max_num):
+            return False
+        # C1 修复: 空矩阵(未训练/无数据)时无法在第0行添加，直接返回失败。
+        # 此前会 IndexError: index 0 out of bounds for axis 0 with size 0，
+        # 导致空库场景下 pattern_learner.predict() 直接崩溃。
+        if self.n_periods == 0:
+            return False
+        if self.matrix[0][candidate_num]:
+            return False  # 已存在
+        self.matrix[0][candidate_num] = True
+        return True
+
+    def remove_candidate_inplace(self, candidate_num):
+        """移除第0行的候选号码（与 add_candidate_inplace 配对使用）"""
+        if 1 <= candidate_num <= self.max_num and self.n_periods > 0:
+            self.matrix[0][candidate_num] = False
 
     def get_context(self, num_periods=None):
         """获取上下文矩阵片段"""

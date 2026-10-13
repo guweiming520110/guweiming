@@ -5,10 +5,10 @@
 新增：支持显示历史各期预测号码对比
 """
 
-import sqlite3
-from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from db_utils import get_connection
 from charts.utils import (
     draw_number_ball, draw_connection, should_connect,
     draw_cell_box, get_ball_color, get_reason_color
@@ -19,60 +19,56 @@ from charts.config import HISTORY_BALL_COLOR
 
 def load_history_predictions(lottery_type, db_path=None):
     """从数据库加载历史预测记录"""
-    if db_path is None:
-        base_dir = Path(__file__).resolve().parent.parent.parent
-        db_path = base_dir / 'lottery.db'
-
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-
+    # db_path 参数已弃用：项目数据统一走 config.DB_PATH（get_connection 已固定），忽略该参数
     predictions = {}
     try:
-        cur.execute(
-            """SELECT target_period, front_numbers, back_numbers,
-                      actual_front, actual_back
-               FROM prediction_records
-               WHERE lottery_type = ?
-               ORDER BY target_period ASC""",
-            (lottery_type,)
-        )
+        with get_connection(commit=False) as conn:
+            cur = conn.execute(
+                """SELECT target_period, front_numbers, back_numbers,
+                          actual_front, actual_back
+                   FROM prediction_records
+                   WHERE lottery_type = ?
+                   ORDER BY target_period ASC""",
+                (lottery_type,)
+            )
 
-        for row in cur.fetchall():
-            period = row[0]
-            front_str = row[1]
-            back_str = row[2]
-            actual_front = row[3]
-            actual_back = row[4]
+            for row in cur.fetchall():
+                period = row[0]
+                front_str = row[1]
+                back_str = row[2]
+                actual_front = row[3]
+                actual_back = row[4]
 
-            front_nums = []
-            if front_str:
-                front_nums = [int(x.strip()) for x in front_str.split(',') if x.strip().isdigit()]
+                front_nums = []
+                if front_str:
+                    front_nums = [int(x.strip()) for x in front_str.split(',') if x.strip().isdigit()]
 
-            back_nums = []
-            if back_str:
-                back_nums = [int(x.strip()) for x in back_str.split(',') if x.strip().isdigit()]
+                back_nums = []
+                if back_str:
+                    back_nums = [int(x.strip()) for x in back_str.split(',') if x.strip().isdigit()]
 
-            verified = (actual_front is not None and actual_front != '')
+                verified = (actual_front is not None and actual_front != '')
 
-            actual_front_set = set()
-            actual_back_set = set()
-            if verified and actual_front:
-                actual_front_set = set(int(x.strip()) for x in actual_front.split(',') if x.strip().isdigit())
-            if verified and actual_back:
-                actual_back_set = set(int(x.strip()) for x in actual_back.split(',') if x.strip().isdigit())
+                actual_front_set = set()
+                actual_back_set = set()
+                if verified and actual_front:
+                    actual_front_set = set(int(x.strip()) for x in actual_front.split(',') if x.strip().isdigit())
+                if verified and actual_back:
+                    actual_back_set = set(int(x.strip()) for x in actual_back.split(',') if x.strip().isdigit())
 
-            predictions[period] = {
-                'front': front_nums,
-                'back': back_nums,
-                'verified': verified,
-                'actual_front': actual_front_set,
-                'actual_back': actual_back_set,
-            }
+                predictions[period] = {
+                    'front': front_nums,
+                    'back': back_nums,
+                    'verified': verified,
+                    'actual_front': actual_front_set,
+                    'actual_back': actual_back_set,
+                }
 
     except Exception as e:
-        pass
-    finally:
-        conn.close()
+        # M12 修复: 异常静默吞掉无痕迹，表不存在/查询失败时难以定位。
+        # 改用 logger 记录（与 trend.py 的 print 行为统一为结构化日志）。
+        from logger import log
+        log.warning("加载历史预测记录失败(彩种=%s): %s", lottery_type, e)
 
     return predictions
 
@@ -116,8 +112,15 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # 未来期数
     future_p = future_periods_count()
     total_rows = n + future_p
-    latest_period_num = int(data['period'].iloc[-1])
-    future_nums = [str(latest_period_num + 1 + i) for i in range(future_p)]
+    # ⚠️ 跨年修复：不能简单用 latest_period_num+1+i（跨年会生成不存在的期号），
+    # 改用 lottery_types.next_period() 逐期递推，正确处理年度滚动
+    from lottery_types import next_period
+    latest_period_str = str(data['period'].iloc[-1])
+    future_nums = []
+    _p = latest_period_str
+    for _ in range(future_p):
+        _p = str(next_period(lottery_type, _p))
+        future_nums.append(_p)
     periods_labels = list(data['period'].astype(str).values) + future_nums
 
     # 加载历史预测记录
@@ -127,8 +130,9 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # ---- 构建存在矩阵 ----
     front_matrix = np.zeros((total_rows, front_max + 1), dtype=bool)
 
-    if has_back:
-        back_matrix = np.zeros((total_rows, back_max + 1), dtype=bool)
+    # 始终分配，避免 has_back 为 False（如 kl8）时变量未绑定；
+    # 无后区时该矩阵为空且不会被后区循环使用（循环受 has_back 守卫）
+    back_matrix = np.zeros((total_rows, max(back_max, 0) + 1), dtype=bool)
 
     if lottery_type == 'kl8':
         # kl8: 从 num_list 读取
@@ -222,50 +226,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     if future_p > 0:
         ax.axhline(y=n - 0.5, color='#E8A020', linewidth=2.0, linestyle='-', zorder=2)
 
-    # ======== 连线（历史期）========
+    # ======== 连线 ========
+    # 说明：连线统一由下方"所有行连线（含历史+未来期）"的循环绘制，
+    # 此处仅初始化方向与计数器。历史连线曾在此重复绘制过一遍，
+    # 会导致连线数虚高约一倍、alpha 叠加变深，已删除该冗余循环。
     directions = [(1, 0), (0, 1), (1, 1), (-1, 1)]
     connection_count = 0
-
-    # 前区连线
-    for i in range(n):
-        for j in range(1, front_max + 1):
-            if not front_matrix[i][j]:
-                continue
-            for step in [1, 2]:
-                for dj, di in directions:
-                    ni, nj = i + di * step, j + dj * step
-                    if ni < 0 or ni >= n or nj < 1 or nj > front_max or not front_matrix[ni][nj]:
-                        continue
-                    if not should_connect(front_matrix, n, front_max, i, j, ni, nj, step):
-                        continue
-                    c1 = get_ball_color(j, cfg)
-                    c2 = get_ball_color(nj, cfg)
-                    avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
-                    lw = 4.5 if step == 1 else 3.0
-                    draw_connection(ax, j, i, nj, ni, color=avg_c, alpha=0.55, linewidth=lw, zorder=2)
-                    connection_count += 1
-
-    # 后区连线 (dlt/ssq)
-    if has_back:
-        for i in range(n):
-            for bj in range(back_min, back_max + 1):
-                if not back_matrix[i][bj]:
-                    continue
-                dj_disp = bj + back_shift_local
-                for step in [1, 2]:
-                    for dbj, di in directions:
-                        ni, nbj = i + di * step, bj + dbj * step
-                        if ni < 0 or ni >= n or nbj < back_min or nbj > back_max or not back_matrix[ni][nbj]:
-                            continue
-                        if not should_connect(back_matrix, n, back_max, i, bj, ni, nbj, step):
-                            continue
-                        ndj_disp = nbj + back_shift_local
-                        c1 = get_ball_color(bj, cfg)
-                        c2 = get_ball_color(nbj, cfg)
-                        avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
-                        lw = 4.5 if step == 1 else 3.0
-                        draw_connection(ax, dj_disp, i, ndj_disp, ni, color=avg_c, alpha=0.55, linewidth=lw, zorder=2)
-                        connection_count += 1
 
     # 将预测号码填入未来第1行（row_idx=n）
     has_pred = (predicted_front and len(predicted_front) > 0) or (predicted_back and len(predicted_back) > 0)
@@ -319,10 +285,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                         c1 = get_ball_color(bj, cfg)
                         c2 = get_ball_color(nbj, cfg)
                         avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
+                        # H5 修复: 后区也按是否预测线区分 alpha/线宽，与前区视觉风格一致
                         is_pred_line = (abs_idx >= n or ni >= n)
                         lw = 4.5 if step == 1 else 3.0
                         draw_connection(ax, dj_disp, abs_idx, ndj_disp, ni, color=avg_c,
-                                        alpha=0.55, linewidth=lw, zorder=2)
+                                        alpha=0.55 if not is_pred_line else 0.4,
+                                        linewidth=lw if not is_pred_line else 3.0, zorder=2)
                         connection_count += 1
 
     # ---- 绘制历史号码圆球 ----
@@ -525,7 +493,9 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
     # ---- 坐标轴 ----
     front_ticks = list(range(front_min, front_max + 1, 2))
     if has_back:
-        back_ticks = [back_start + i for i in range(back_min, back_max + 1)]
+        # 号码 bj 实际画在 bj + back_shift 列，而 back_start = back_shift + back_min，
+        # 因此刻度应为 back_start + (bj - back_min)；旧写法整体右移了 1 列。
+        back_ticks = [back_start + (i - back_min) for i in range(back_min, back_max + 1)]
         all_ticks = front_ticks + back_ticks
         all_labels = [str(t) for t in front_ticks] + [str(t) for t in range(back_min, back_max + 1)]
     else:
@@ -544,27 +514,27 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
 
     # ---- 图例 ----
     legend_elements = [
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=HISTORY_BALL_COLOR,
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=HISTORY_BALL_COLOR,
                    markersize=9, label='开奖号码(绿底白字)'),
-        plt.Line2D([0], [0], color='#888888', linewidth=2, alpha=0.5, label='相邻号码连线'),
+        Line2D([0], [0], color='#888888', linewidth=2, alpha=0.5, label='相邻号码连线'),
     ]
     if has_pred:
         legend_elements.append(
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#222222',
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='#222222',
                        markeredgecolor='white', markersize=9, label='预测号码(未验证)'))
         # 验证后的图例
         has_verified_any = (verified_front is not None) or (verified_back is not None)
         if has_verified_any:
             legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#EECC00',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#EECC00',
                            markeredgecolor='#DDAA00', markersize=9, label='预测正确(黄底白字★)'))
             legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#DD2222',
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#DD2222',
                            markeredgecolor='#FF3333', markersize=9, label='预测错误(红底白字)'))
         for kw, clr, lbl in [('水平', '#4CAF50', '水平理由'), ('垂直', '#2196F3', '垂直理由'),
                               ('对角', '#FF9800', '对角理由'), ('三角', '#9C27B0', '三角理由')]:
             legend_elements.append(
-                plt.Line2D([0], [0], color=clr, linewidth=3, alpha=0.8, label=lbl))
+                Line2D([0], [0], color=clr, linewidth=3, alpha=0.8, label=lbl))
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.85, fontsize=8, ncol=6)
 
     # ---- 标题 ----

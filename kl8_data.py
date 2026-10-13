@@ -6,51 +6,99 @@
 """
 
 import re
-import sqlite3
-import pandas as pd
-import numpy as np
-from pathlib import Path
 from datetime import datetime, timedelta
+import pandas as pd
+from pathlib import Path
 
-import requests
 from bs4 import BeautifulSoup
+
+from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from db_utils import get_connection
+from http_utils import get_with_retry, sleep_interval
+from logger import log
+from schema import DDL_KL8_RECORDS
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
 
 KL8_NUMS = 80
 KL8_DRAWN = 20
+# 500.com 走势图接口仅支持这几档期数，避免传入任意值构造出无效 URL
+VALID_PERIODS = (30, 50, 100)
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-}
+
+def period_to_date(period):
+    """期号 YYYYNNN → 近似开奖日期 (快乐8每天开一期，第1期=1月1日，闰年自动处理)。
+
+    ⚠️ 仅作 500.com 走势图无日期列时的近似（可能偏 1-10 天：官方期号与自然日
+    并非严格每天一一对应，存在休市/编号规则差异）。推荐日期来源：官方 cwl.gov.cn
+    接口的 date 字段（fetch_kl8_cwl），以官方为准。
+    """
+    period = str(period).strip()
+    if len(period) < 5 or not period.isdigit():
+        return ''
+    year = int(period[:4])
+    seq = int(period[4:])
+    try:
+        base = datetime(year, 1, 1)
+        return (base + timedelta(days=seq - 1)).strftime('%Y-%m-%d')
+    except (ValueError, OverflowError):
+        return ''
+
+
+CWL_KL8_URL = 'https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice'
+
+
+def fetch_kl8_cwl(issue_count=50):
+    """从中国福彩官方接口(cwl.gov.cn)获取快乐8开奖数据。
+
+    返回:
+        list of dict: [{'period','date','numbers'}, ...] 或 None
+
+    优点：数据日更、日期字段官方精确、JSON 结构化，替代已停更的 500.com 快乐8板块。
+    官方接口 name=kl8 的 red 字段为 20 个开奖号码(逗号分隔)。
+    """
+    try:
+        # M5 修复: cwl.gov.cn 接口常见反爬要求 Referer 头（当前未强制，但属不稳定依赖；
+        # 一旦被拦，回退的 500 走势图只有最近 30 期，训练数据瞬间枯竭）。
+        resp = get_with_retry(
+            f'{CWL_KL8_URL}?name=kl8&issueCount={issue_count}',
+            encoding='utf-8',
+            headers={**HTTP_HEADERS, 'Referer': 'https://www.cwl.gov.cn/'},
+        )
+        if resp is None:
+            return None
+        data = resp.json()
+    except Exception as e:
+        log.warning("官方快乐8接口请求失败: %s", e)
+        return None
+
+    rows = (data or {}).get('result') or []
+    records = []
+    for row in rows:
+        code = str(row.get('code', '')).strip()
+        date = str(row.get('date', '')).strip()
+        red = str(row.get('red', '') or '')
+        nums = [int(x) for x in red.split(',') if x.strip().isdigit()]
+        if len(code) >= 7 and len(nums) == KL8_DRAWN:
+            records.append({'period': code, 'date': date[:10], 'numbers': sorted(nums)})
+    return records if records else None
+
+
+def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
+    """向后兼容包装：统一委托 http_utils.get_with_retry（指数退避重试）"""
+    return get_with_retry(url, max_retries=max_retries, timeout=timeout,
+                          encoding=HTTP_ENCODING)
 
 
 def create_kl8_table(conn=None):
-    """创建快乐8数据表"""
-    should_close = conn is None
+    """创建快乐8数据表（DDL 统一取自 schema，避免两份定义漂移）"""
     if conn is None:
-        conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS kl8_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            period TEXT NOT NULL UNIQUE,
-            date TEXT NOT NULL DEFAULT '',
-            numbers TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_kl8_period ON kl8_records(period)")
+        with get_connection() as _conn:
+            _conn.execute(DDL_KL8_RECORDS)
+        return
+    conn.execute(DDL_KL8_RECORDS)
     conn.commit()
-    if should_close:
-        conn.close()
 
 
 def fetch_kl8_html(num_periods=50):
@@ -58,16 +106,16 @@ def fetch_kl8_html(num_periods=50):
     从500彩票网获取快乐8走势图HTML
 
     参数:
-        num_periods: 30 / 50 / 100
+        num_periods: 30 / 50 / 100（其他值自动向上取到最近的合法档位）
     """
+    if num_periods not in VALID_PERIODS:
+        candidates = [p for p in VALID_PERIODS if p >= num_periods]
+        num_periods = candidates[0] if candidates else max(VALID_PERIODS)
     url = f'https://datachart.500.com/kl8?expect={num_periods}'
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.encoding = 'gb2312'
-        return resp.text
-    except Exception as e:
-        print(f"  请求失败: {e}")
+    resp = get_with_retry(url, encoding=HTTP_ENCODING)
+    if resp is None:
         return None
+    return resp.text
 
 
 def parse_kl8_numbers(html):
@@ -111,10 +159,23 @@ def parse_kl8_numbers(html):
     return None
 
 
-def _parse_from_tbody(tbody):
-    """从 tbody id="tdata" 解析（2026年网站结构）"""
+def _extract_date(cells):
+    """从td单元格列表中提取日期字符串（YYYY-MM-DD格式），找不到返回空字符串"""
+    for td in cells:
+        text = td.get_text(strip=True)
+        m = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+        if m:
+            return m.group(1)
+    return ''
+
+
+def _parse_by_rows(rows):
+    """统一的 BS4 行解析（tbody 与 table 共用，消除重复）。
+
+    规则：期号7位；号码按列索引=号码；H1 只认 chartBall01；
+    H2 数量必须恰好 20，畸形行整行拒收；日期从行尾列提取。
+    """
     records = []
-    rows = tbody.find_all('tr')
     for row in rows:
         cells = row.find_all('td')
         if len(cells) < 5:
@@ -133,18 +194,31 @@ def _parse_from_tbody(tbody):
         for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
             if idx > KL8_NUMS:
                 break
-            # 检查是否是开奖号码
+            # H1: 仅 chartBall01 是真实开奖号码；chartBall02 语义未确认为非中奖态，
+            # 并入会产生每期多出几十个号码 → 截断后错误入库污染训练
             td_class = td.get('class', [])
-            if 'chartBall01' in td_class or 'chartBall02' in td_class:
+            if 'chartBall01' in td_class:
                 numbers.append(idx)
 
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
+        # H2: 数量必须恰好等于 20，否则整行拒收——畸形行会谎报为正常数据
+        if len(numbers) != KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
+                        period, len(numbers), KL8_DRAWN)
+            continue
+        # 尝试从行末列提取日期（YYYY-MM-DD 格式）
+        date_str = _extract_date(cells)
+        records.append({
+            'period': period,
+            'date': date_str,
+            'numbers': sorted(numbers[:KL8_DRAWN])
+        })
 
     return records if records else None
+
+
+def _parse_from_tbody(tbody):
+    """从 tbody id="tdata" 解析（2026年网站结构）"""
+    return _parse_by_rows(tbody.find_all('tr'))
 
 
 def _parse_from_text(html):
@@ -166,7 +240,8 @@ def _parse_from_text(html):
         period = period_match.group(1)
 
         # 提取所有td，找到包含 chartBall01 的td，它的位置就是号码
-        td_pattern = r'<td[^>]*class="[^"]*(chartBall01|chartBall02)[^"]*"[^>]*>.*?</td>'
+        # H1: 只认 chartBall01（真实开奖球），chartBall02 语义未确认为非中奖态
+        td_pattern = r'<td[^>]*class="[^"]*chartBall01[^"]*"[^>]*>.*?</td>'
         td_matches = list(re.finditer(td_pattern, row_html))
 
         # 找出这些td在该行中的位置索引（从1开始）
@@ -181,46 +256,26 @@ def _parse_from_text(html):
                     numbers.append(idx)
                     break
 
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
+        # H2: 数量必须恰好 20，畸形行整行拒收
+        if len(numbers) != KL8_DRAWN:
+            log.warning("期号 %s 解析出 %d 个号码(应为 %d)，整行丢弃",
+                        period, len(numbers), KL8_DRAWN)
+            continue
+        # 该分支只有 HTML 文本、没有 td 标签对象，因此改用正则提取日期
+        _m = re.search(r'(\d{4}-\d{2}-\d{2})', row_html)
+        date_str = _m.group(1) if _m else ''
+        records.append({
+            'period': period,
+            'date': date_str,
+            'numbers': sorted(numbers[:KL8_DRAWN])
+        })
 
     return records if records else None
 
 
 def _parse_from_table(table):
-    """从BeautifulSoup Table对象解析"""
-    records = []
-    rows = table.find_all('tr')
-    for row in rows:
-        cells = row.find_all('td')
-        if len(cells) < 5:
-            continue
-        # 首列期号
-        period_td = cells[0].get_text(strip=True)
-        period_match = re.match(r'(\d{7})', period_td)
-        if not period_match:
-            continue
-        period = period_match.group(1)
-
-        numbers = []
-        for idx, td in enumerate(cells[1:], 1):  # idx = 1~80 就是号码
-            if idx > KL8_NUMS:
-                break
-            # 检查是否是开奖号码
-            td_class = td.get('class', [])
-            if 'chartBall01' in td_class or 'chartBall02' in td_class:
-                numbers.append(idx)
-
-        if len(numbers) >= KL8_DRAWN:
-            records.append({
-                'period': period,
-                'numbers': sorted(numbers[:KL8_DRAWN])
-            })
-
-    return records if records else None
+    """从BeautifulSoup Table对象解析（复用统一行解析）"""
+    return _parse_by_rows(table.find_all('tr'))
 
 
 def scrape_from_500(num_periods=50):
@@ -239,75 +294,134 @@ def scrape_from_500(num_periods=50):
     if records:
         print(f"  成功解析 {len(records)} 期真实开奖数据")
         for r in records[:3]:
-            print(f"    期号 {r['period']}: {r['numbers'][:10]}...")
+            date_info = f" ({r.get('date', '')})" if r.get('date') else ''
+            print(f"    期号 {r['period']}{date_info}: {r['numbers'][:10]}...")
         return records
 
     return None
 
 
 def save_to_db(records):
-    """保存到数据库"""
-    conn = sqlite3.connect(str(DB_PATH))
-    create_kl8_table(conn)
+    """保存到数据库
 
+    C4: date 缺失时按期号反推补全（500.com 走势图无日期列）；
+    H3: 反推日期晚于今天 ＝ 站点回包未来数据，整条跳过，绝不污染历史表。
+    """
     saved = 0
-    for r in records:
-        try:
-            numbers_str = ','.join(str(n) for n in r['numbers'])
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)",
-                (r['period'], r.get('date', ''), numbers_str)
-            )
-            # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
-            # 不能用连接级累计的 total_changes 判断
-            if cur.rowcount > 0:
-                saved += 1
-        except Exception:
-            continue
-    conn.commit()
-    conn.close()
+    today = datetime.now().date()
+    with get_connection() as conn:
+        conn.execute(DDL_KL8_RECORDS)
+        for r in records:
+            try:
+                numbers_str = ','.join(str(n) for n in r['numbers'])
+                date_str = (r.get('date') or period_to_date(r['period'])) or ''
+                # 未来数据守卫：期号反推出的日期晚于今天，说明读到了未开奖的预览期
+                if date_str:
+                    try:
+                        d = datetime.strptime(date_str, '%Y-%m-%d').date()
+                        if d > today:
+                            log.warning("期%s 日期(%s)晚于今天，跳过未来数据", r['period'], date_str)
+                            continue
+                    except ValueError:
+                        pass
+                cur = conn.execute(
+                    """INSERT INTO kl8_records (period, date, numbers) VALUES (?, ?, ?)
+                       ON CONFLICT(period) DO UPDATE SET
+                         date=excluded.date, numbers=excluded.numbers
+                       WHERE excluded.date <> ''""",
+                    (r['period'], date_str, numbers_str)
+                )
+                # rowcount 为本条语句实际插入行数（被 IGNORE 跳过则为0），
+                # 不能用连接级累计的 total_changes 判断
+                if cur.rowcount > 0:
+                    saved += 1
+            except Exception as e:
+                log.warning("保存 %s 期失败: %s", r.get('period'), e)
     return saved
 
 
 def load_kl8_data(limit=None):
-    """从数据库加载快乐8数据"""
-    conn = sqlite3.connect(str(DB_PATH))
-    create_kl8_table(conn)
-
+    """从数据库加载快乐8数据（limit 在 SQL 层生效，避免全表读入内存）"""
     try:
-        df = pd.read_sql("SELECT * FROM kl8_records ORDER BY period ASC", conn)
-        conn.close()
-
+        with get_connection(commit=False) as conn:
+            conn.execute(DDL_KL8_RECORDS)
+            if limit:
+                df = pd.read_sql(
+                    "SELECT period, date, numbers FROM kl8_records "
+                    "ORDER BY period DESC LIMIT ?", conn, params=(int(limit),)
+                )
+                df = df.iloc[::-1].reset_index(drop=True)
+            else:
+                df = pd.read_sql(
+                    "SELECT period, date, numbers FROM kl8_records ORDER BY period ASC", conn
+                )
         if len(df) == 0:
             return None
-
-        all_nums = []
-        for nums_str in df['numbers']:
-            nums = [int(x) for x in str(nums_str).split(',') if x.strip().isdigit()]
-            all_nums.append(nums)
-        df['num_list'] = all_nums
-
-        if limit and len(df) > limit:
-            df = df.tail(limit).reset_index(drop=True)
+        df['num_list'] = [
+            [int(x) for x in str(s).split(',') if x.strip().isdigit()]
+            for s in df['numbers']
+        ]
         return df
     except Exception as e:
-        print(f"  加载失败: {e}")
-        conn.close()
+        log.error("加载快乐8数据失败: %s", e)
         return None
 
 
-def ensure_kl8_data(num_periods=50, force_refresh=False):
+def ensure_kl8_data(num_periods=50, force_refresh=False, history_periods=300):
     """
     确保快乐8真实数据可用（仅从500.com获取，不使用模拟数据）
+
+    H4 修复: 除"条数够不够"外增加新鲜度校验——快乐8每日开1期，
+    最新一期距今天超过 2 天即视为陈旧，强制重新拉取，避免用旧数据预测。
+
+    D2 修复: 历史补齐——快乐8需要足够历史样本支撑特征工程/预测。
+    旧实现每次只拉 num_periods(30/50/100) 期，库里历史最多 100 期且不回溯，
+    导致训练样本长期不足。现增加 history_periods 目标（默认 300 期≈10个月）：
+    当库中总记录数不足目标时，用 CWL 接口一次拉取较大 issueCount 补历史。
     """
     # 先检查数据库
     df = load_kl8_data(limit=num_periods)
-    if df is not None and len(df) >= min(num_periods, 20) and not force_refresh:
-        print(f"  从数据库加载 {len(df)} 期快乐8数据")
-        return df
+    if df is not None and len(df) >= num_periods and not force_refresh:
+        # 新鲜度校验：取最新一期日期（date 列或期号反推），超过 2 天视为陈旧
+        latest = df.iloc[-1]
+        latest_date = None
+        ds = latest.get('date')
+        if ds:
+            try:
+                latest_date = datetime.strptime(str(ds), '%Y-%m-%d').date()
+            except ValueError:
+                latest_date = None
+        if latest_date is None:
+            _d = period_to_date(latest.get('period', ''))
+            if _d:
+                try:
+                    latest_date = datetime.strptime(_d, '%Y-%m-%d').date()
+                except ValueError:
+                    latest_date = None
 
-    # 从500.com爬取真实数据
-    records = scrape_from_500(num_periods)
+        if latest_date is not None:
+            days_old = (datetime.now().date() - latest_date).days
+            if days_old <= 2:
+                print(f"  从数据库加载 {len(df)} 期快乐8数据 (最新期 {latest['period']} · {latest_date} · {days_old}天前)")
+                # D2: 即使数据新鲜，若总历史仍不足目标，也顺带补齐一次
+                _maybe_fill_history(history_periods)
+                return load_kl8_data(limit=num_periods)
+            print(f"  ⚠️ 快乐8最新期 {latest['period']} 已是 {days_old} 天前，数据陈旧，重新拉取最新")
+        else:
+            # 极端兜底：无任何日期可校验时退化为仅按条数判断
+            print(f"  从数据库加载 {len(df)} 期快乐8数据 (无日期信息，跳过新鲜度检查)")
+            _maybe_fill_history(history_periods)
+            return load_kl8_data(limit=num_periods)
+
+    # 首选官方数据源(cwl.gov.cn，日更+日期精确)；失败时回退 500.com 走势图
+    # D2: 若库中历史不足目标，用较大 issueCount 一次补齐（CWL 实测支持 365 期）
+    need_history = _need_history_fill(history_periods)
+    pull_count = max(num_periods, min(history_periods, 365)) if need_history else num_periods
+    records = fetch_kl8_cwl(pull_count)
+    if not records:
+        # 改进5: CWL 主源失败时回退 500 走势图，两源之间加节流避免连续打站
+        sleep_interval()
+        records = scrape_from_500(pull_count)
 
     if not records:
         print("  ❌ 无法从500.com获取数据，请检查网络连接")
@@ -318,11 +432,42 @@ def ensure_kl8_data(num_periods=50, force_refresh=False):
     saved = save_to_db(records)
     print(f"  已保存 {saved} 期新数据到数据库")
 
-    df = load_kl8_data(limit=num_periods)
+    df = load_kl8_data(limit=max(num_periods, 50))
     if df is not None and len(df) > 0:
         return df
 
     return None
+
+
+def _total_kl8_rows():
+    """返回 kl8_records 当前总行数（无表/异常时返回 0）"""
+    try:
+        with get_connection(commit=False) as conn:
+            conn.execute(DDL_KL8_RECORDS)
+            return conn.execute("SELECT COUNT(*) FROM kl8_records").fetchone()[0]
+    except Exception:
+        return 0
+
+
+def _need_history_fill(history_periods):
+    """判断库中历史期数是否不足目标"""
+    return _total_kl8_rows() < history_periods
+
+
+def _maybe_fill_history(history_periods):
+    """数据已新鲜但历史不足时，用 CWL 接口拉较大窗口补齐历史（幂等 upsert）"""
+    if not _need_history_fill(history_periods):
+        return
+    need = history_periods - _total_kl8_rows()
+    pull_count = min(max(need, 50), 365)
+    print(f"  ℹ️ 快乐8历史不足（当前{_total_kl8_rows()}期，目标{history_periods}期），补齐历史（拉取{pull_count}期）...")
+    try:
+        records = fetch_kl8_cwl(pull_count)
+        if records:
+            saved = save_to_db(records)
+            print(f"  历史补齐: 新增 {saved} 期 (现有{_total_kl8_rows()}期)")
+    except Exception as e:
+        log.warning("快乐8历史补齐失败: %s", e)
 
 
 if __name__ == '__main__':

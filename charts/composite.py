@@ -12,12 +12,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import pandas as pd
-import numpy as np
 
 from charts.network import generate_network_chart
 from charts.trend import generate_trend_chart
 from charts.frequency import generate_frequency_chart
 from charts.config import chart_config
+
+# 统一输出目录：优先用 config.OUTPUT_DIR（根目录/output，与 .py 源码分离），
+# 独立运行图表模块时降级为 项目根/output（H5 修复）
+try:
+    from config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR
+except ImportError:
+    DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / 'output'
 
 
 def generate_composite_chart(df, lottery_type='dlt',
@@ -42,8 +48,7 @@ def generate_composite_chart(df, lottery_type='dlt',
     name = cfg['name']
 
     if output_dir is None:
-        BASE_DIR = Path(__file__).resolve().parent.parent
-        output_dir = BASE_DIR / 'charts'
+        output_dir = DEFAULT_OUTPUT_DIR
     output_dir = Path(output_dir)
     os.makedirs(str(output_dir), exist_ok=True)
 
@@ -85,8 +90,10 @@ def generate_composite_chart(df, lottery_type='dlt',
     ]
 
     buffers = {}
+    failed = []
     for name_key, title, gen in generators:
         print(f"  {title} ...", end=' ')
+        fig = None
         try:
             fig = gen()
             if fig:
@@ -94,20 +101,35 @@ def generate_composite_chart(df, lottery_type='dlt',
                 dpi = 150
                 fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
                             facecolor=fig.get_facecolor())
-                plt.close(fig)
                 buf.seek(0)
                 buffers[name_key] = buf
                 print("OK")
             else:
                 print("跳过")
         except Exception as e:
+            failed.append(f"{title}: {e}")
             print(f"失败: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # 无论成功失败都必须关闭，否则异常路径下 pyplot 会持续累积 figure
+            if fig is not None:
+                plt.close(fig)
 
     if not buffers:
         print("没有生成任何图表！")
-        return
+        return None
+
+    if failed:
+        # 残缺的合成图会让人误以为分析完整，宁可不输出
+        print(f"  ⚠️ {len(failed)} 张子图生成失败，放弃输出残缺合成图")
+        for f in failed:
+            print(f"     - {f}")
+        # M4 修复: 失败分支提前 return 前必须关闭已生成的 buffer，
+        # 否则成功子图的 BytesIO 未被 close（原代码只在结尾统一关闭）。
+        for buf in buffers.values():
+            buf.close()
+        return None
 
     images = {k: plt.imread(buf) for k, buf in buffers.items()}
 

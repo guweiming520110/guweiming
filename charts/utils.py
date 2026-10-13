@@ -6,6 +6,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from matplotlib.patches import Circle
 
 
@@ -51,7 +52,11 @@ def should_connect(matrix, n, max_val, i, j, ni, nj, step=1):
 
     # ======== 步长=2：隔1空位规律检测 ========
     if step == 2:
-        pattern_points = [1]
+        # C2 修复: pattern_points 记录连线上存在的点的步进序号（相对 i,j 的 k 值）。
+        # 初值应为 [0]（自身距离为 0 个 step），旧代码写成 [1] 导致首个隔空点
+        # 永远无法连上；且判定应从"g % step == 0"改为"间隔相等"（等差数列），
+        # 因为 gaps 存的是 k 的差值（已是整数个 step），取模维度不匹配。
+        pattern_points = [0]
         for k in range(1, 4):
             fi, fj = i + di * k, j + dj * k
             if 0 <= fi < n and 1 <= fj <= max_val and matrix[fi][fj]:
@@ -63,7 +68,8 @@ def should_connect(matrix, n, max_val, i, j, ni, nj, step=1):
 
         if len(pattern_points) >= 3:
             gaps = [pattern_points[t+1] - pattern_points[t] for t in range(len(pattern_points)-1)]
-            if gaps and all(g % step == 0 for g in gaps):
+            # 等差数列（所有间隔相等）才构成稳定的"隔1空"连线
+            if gaps and all(g == gaps[0] for g in gaps):
                 return True
 
         if is_h_adj or is_v_adj:
@@ -153,7 +159,7 @@ def should_connect(matrix, n, max_val, i, j, ni, nj, step=1):
 
 def draw_cell_box(ax, row, col, face, edge, lw):
     """绘制一个网格单元格"""
-    ax.add_patch(plt.Rectangle((col - 0.5, row - 0.5), 1, 1,
+    ax.add_patch(Rectangle((col - 0.5, row - 0.5), 1, 1,
                                 facecolor=face, edgecolor=edge,
                                 linewidth=lw, zorder=1))
 

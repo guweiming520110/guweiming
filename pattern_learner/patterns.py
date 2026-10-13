@@ -40,7 +40,7 @@ PATTERN_TEMPLATES = [
         'name': 'horiz_gap2',
         'label': '水平隔1空3连',
         'offsets': [(0, 0), (0, 2), (0, 4)],
-        'step': 2,
+        'step': 1,
         'min_rows': 1,
         'complexity': 'C',
         'base_score': 0.4,
@@ -56,6 +56,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 0.8,
     },
+    # 注：原 vert_symmetry(垂直对称) 与 vert_line_3 均为竖直3连，去平移后footprint完全相同，已删除以消除双重计分
     {
         'name': 'vert_line_4',
         'label': '垂直4连',
@@ -65,15 +66,8 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 1.2,
     },
-    {
-        'name': 'vert_gap2',
-        'label': '垂直隔1空3连',
-        'offsets': [(0, 0), (2, 0), (4, 0)],
-        'step': 2,
-        'min_rows': 5,
-        'complexity': 'B',
-        'base_score': 0.9,
-    },
+    # 注：原 vert_gap2(垂直隔1空3连) 与 skip1_3vert 去平移后 footprint 完全相同
+    # （step 修复后均为偏移 0,2,4），已删除以免双重计分；语义由 skip1_3vert 承担
 
     # ---- 3. 对角线 ↘（B级） ----
     {
@@ -85,15 +79,8 @@ PATTERN_TEMPLATES = [
         'complexity': 'B',
         'base_score': 0.8,
     },
-    {
-        'name': 'diag_se_gap2',
-        'label': '对角↘隔1空',
-        'offsets': [(0, 0), (2, 2), (4, 4)],
-        'step': 2,
-        'min_rows': 5,
-        'complexity': 'B',
-        'base_score': 0.9,
-    },
+    # 注：原 diag_se_gap2 与 skip1_diag 去平移后 footprint 完全相同（step 修复后均为偏移 0,2,4），
+    # 已删除以免双重计分；隔1空对角语义由 skip1_diag 承担
 
     # ---- 4. 对角线 ↙（B级） ----
     {
@@ -109,7 +96,7 @@ PATTERN_TEMPLATES = [
         'name': 'diag_sw_gap2',
         'label': '对角↙隔1空',
         'offsets': [(0, 0), (2, -2), (4, -4)],
-        'step': 2,
+        'step': 1,
         'min_rows': 5,
         'complexity': 'B',
         'base_score': 0.9,
@@ -129,7 +116,7 @@ PATTERN_TEMPLATES = [
         'name': 'square_2x2_gap',
         'label': '2×2隔空方块',
         'offsets': [(0, 0), (0, 2), (2, 0), (2, 2)],
-        'step': 2,
+        'step': 1,
         'min_rows': 3,
         'complexity': 'S',
         'base_score': 2.5,
@@ -263,15 +250,7 @@ PATTERN_TEMPLATES = [
         'base_score': 1.4,
     },
     # 注：原 step_up 与 diag_se_3 形状完全相同，已删除以消除双重计分
-    {
-        'name': 'step_down',
-        'label': '阶梯下降',
-        'offsets': [(0, 2), (1, 1), (2, 0)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'A',
-        'base_score': 1.2,
-    },
+    # 注：原 step_down 与 diag_sw_3 形状完全相同（去平移后footprint一致），已删除以消除双重计分
 
     # ---- 11. 曲线弧形（S级） ----
     {
@@ -301,15 +280,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 2.8,
     },
-    {
-        'name': 'arc_down_4',
-        'label': '下凹弧4点',
-        'offsets': [(0, 1), (1, 0), (1, 2), (2, 1)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'S',
-        'base_score': 2.8,
-    },
+    # 注：原 arc_down_4(下凹弧4点) 与 arc_up_4 均为同一菱形，去平移后footprint完全相同，已删除以消除双重计分
 
     # ---- 12. 对称图案（S级） ----
     {
@@ -321,15 +292,7 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 1.8,
     },
-    {
-        'name': 'vert_symmetry',
-        'label': '垂直对称',
-        'offsets': [(-1, 0), (0, 0), (1, 0)],
-        'step': 1,
-        'min_rows': 3,
-        'complexity': 'S',
-        'base_score': 1.8,
-    },
+    # 注：原 vert_symmetry(垂直对称) 已上移合并至 vert_line_3 处删除，见上文说明
     {
         'name': 'x_symmetry',
         'label': '点对称X形',
@@ -388,37 +351,73 @@ PATTERN_TEMPLATES = [
         'complexity': 'S',
         'base_score': 2.5,
     },
-    {
-        'name': 'corner_missing_tl',
-        'label': '缺左上四角',
-        'offsets': [(0, 1), (1, 0), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
-    {
-        'name': 'corner_missing_tr',
-        'label': '缺右上四角',
-        'offsets': [(0, 0), (1, 0), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
-    {
-        'name': 'corner_missing_bl',
-        'label': '缺左下四角',
-        'offsets': [(0, 0), (0, 1), (1, 1)],
-        'step': 1,
-        'min_rows': 2,
-        'complexity': 'A',
-        'base_score': 1.6,
-    },
+    # 注：原 corner_missing_tl 与 triangle_tr 形状完全相同（去平移后footprint一致），已删除以消除双重计分
+    # 注：原 corner_missing_tr 与 triangle_tl 形状完全相同（去平移后footprint一致），已删除以消除双重计分
+    # 注：原 corner_missing_bl 与 triangle_br 形状完全相同（去平移后footprint一致），已删除以消除双重计分
     # 注：原 corner_missing_br 与 triangle_bl 形状完全相同，已删除以消除双重计分
 ]
 
 # ==================== 图案匹配引擎 ====================
+
+# M10 修复: 嵌套图案双重计分去重。
+# 存在几何上的严格包含关系（如 vert_line_3 ⊂ vert_line_4、triangle_* ⊂ square_2x2、
+# z_shape ⊂ rect_2x3 等）。若不处理，同一候选号码参与大小图案时会被分别计数，
+# 复杂度越高、被嵌套覆盖的号码得分被系统性放大，污染稀有度/加权排序。
+# 规则：当某图案实例被一个更大的图案实例完整包含时，小图案不再单独计分，
+# 只计大图案（其 base_score 已体现更高稀有度）。
+
+
+_PATTERN_MAP = {p['name']: p for p in PATTERN_TEMPLATES}
+
+
+def _build_nested_cover():
+    """构建图案覆盖关系：A -> [B, ...]，B 的 offsets 严格包含 A 的 offsets。"""
+    cover = {}
+    for p in PATTERN_TEMPLATES:
+        a_set = set(p['offsets'])
+        covered_by = [q['name'] for q in PATTERN_TEMPLATES
+                      if q is not p and a_set < set(q['offsets'])]
+        cover[p['name']] = covered_by
+    return cover
+
+
+_NESTED_COVER = _build_nested_cover()
+
+
+def _instance_points(matrix, template, anchor_row, anchor_col):
+    """返回图案实例占用的所有 (r, c) 坐标；任一点出界或缺失时返回 None。"""
+    n_periods, n_cols = matrix.shape
+    max_num = n_cols - 1
+    step = template.get('step', 1)
+    pts = []
+    for dr, dc in template['offsets']:
+        r = anchor_row + dr * step
+        c = anchor_col + dc * step
+        if r < 0 or r >= n_periods or c < 1 or c > max_num:
+            return None
+        if not matrix[r][c]:
+            return None
+        pts.append((r, c))
+    return pts
+
+
+def _covered_by_larger(matrix, a_template, a_pts):
+    """判断 A 实例是否被某个更大图案 B 的实例完整覆盖。
+
+    枚举 A 实例首点作为 B 实例的每个 offset 位置来反推 B 的 anchor，
+    一旦找到 B 实例完整包含 A 实例即返回 True。
+    """
+    for bname in _NESTED_COVER.get(a_template['name'], []):
+        b = _PATTERN_MAP[bname]
+        step = b.get('step', 1)
+        a0 = a_pts[0]
+        for drb, dcb in b['offsets']:
+            ar = a0[0] - drb * step
+            ac = a0[1] - dcb * step
+            b_pts = _instance_points(matrix, b, ar, ac)
+            if b_pts is not None and all(p in b_pts for p in a_pts):
+                return True
+    return False
 
 
 def match_pattern_at(matrix, pattern, row, col):
@@ -513,6 +512,7 @@ def count_patterns_around(matrix, row, col, patterns=None):
                 continue
 
             valid = True
+            pts = []
             for dr, dc in offsets:
                 r = anchor_row + dr * step
                 c = anchor_col + dc * step
@@ -522,8 +522,13 @@ def count_patterns_around(matrix, row, col, patterns=None):
                 if not matrix[r][c]:
                     valid = False
                     break
+                pts.append((r, c))
 
             if valid:
+                # M10: 被更大图案完整包含时不再单独计分，避免嵌套双重计分
+                # （vert_line_3⊂vert_line_4、triangle_*⊂square_2x2 等）
+                if _covered_by_larger(matrix, pattern, pts):
+                    continue
                 counts[name] += 1
 
     return dict(counts)
@@ -566,7 +571,10 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                 continue
 
             valid = True
-            min_row = n_periods
+            # 行号越大表示期数越久远(row=0为最新一期)，用图案触及的最旧行(max_row)作为衰减基准，
+            # 使跨越更久远历史的图案权重更低，与"近期图案权重更高"的语义一致
+            max_row = 0
+            pts = []
             for dr, dc in offsets:
                 r = anchor_row + dr * step
                 c = anchor_col + dc * step
@@ -576,12 +584,16 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                 if not matrix[r][c]:
                     valid = False
                     break
-                if r < min_row:
-                    min_row = r
+                if r > max_row:
+                    max_row = r
+                pts.append((r, c))
 
             if valid:
+                # M10: 被更大图案完整包含时不再单独计分，避免嵌套双重计分
+                if _covered_by_larger(matrix, pattern, pts):
+                    continue
                 total_count += 1
-                total_weighted += decay ** min_row
+                total_weighted += decay ** max_row
 
         # 仅在实际匹配到图案时写入，保持与 count_patterns_around 的语义一致
         if total_count > 0:

@@ -6,38 +6,61 @@
 """
 
 import re
-import sqlite3
-import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
-import requests
 from bs4 import BeautifulSoup
+
+from config import HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from db_utils import get_connection
+from http_utils import get_with_retry, sleep_interval
+from logger import log
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DB_PATH = ROOT_DIR / 'lottery.db'
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-}
+
+def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
+    """向后兼容包装：统一委托 http_utils.get_with_retry（指数退避重试）"""
+    return get_with_retry(url, max_retries=max_retries, timeout=timeout,
+                          encoding=HTTP_ENCODING)
 
 
 def get_ssq_status():
-    """检查数据库双色球数据状态"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cur = conn.execute(
-        "SELECT COUNT(*), MIN(period), MAX(period) FROM lottery_records WHERE lottery_type='ssq'"
-    )
-    cnt, pmin, pmax = cur.fetchone()
-    conn.close()
-    return {'count': cnt, 'min_period': pmin, 'max_period': pmax}
+    """检查数据库双色球数据状态（含年内缺口检测，供回补使用）"""
+    with get_connection(commit=False) as conn:
+        cur = conn.execute(
+            "SELECT COUNT(*), MIN(period), MAX(period) FROM lottery_records WHERE lottery_type='ssq'"
+        )
+        cnt, pmin, pmax = cur.fetchone()
+
+        cur = conn.execute(
+            "SELECT period FROM lottery_records WHERE lottery_type='ssq' ORDER BY period"
+        )
+        rows = cur.fetchall()
+
+    # D4 修复: 仿 dlt 的 gap 检测——非空库跨年后去年尾巴期号永不回补的问题
+    # （旧实现只在空库时补去年，库里若最新期停在去年中段，去年尾巴永远缺）
+    from lottery_types import next_period
+    periods = [int(r[0]) for r in rows if str(r[0]).strip().isdigit()]
+    gaps = []
+    for i in range(len(periods) - 1):
+        gap = periods[i + 1] - periods[i]
+        if gap <= 1:
+            continue
+        same_year = str(periods[i])[:2] == str(periods[i + 1])[:2]
+        is_rollover = False
+        try:
+            is_rollover = next_period('ssq', str(periods[i])) == str(periods[i + 1])
+        except Exception:
+            is_rollover = False
+        if (same_year or not is_rollover) and (gap - 1) <= 500:
+            gaps.append((periods[i], periods[i + 1], gap - 1))
+
+    return {
+        'count': cnt, 'min_period': pmin, 'max_period': pmax,
+        'gaps': gaps, 'latest_period': int(pmax) if pmax and str(pmax).strip().isdigit() else 0,
+    }
 
 
 def fetch_ssq_history_page(start=1, end=100):
@@ -54,13 +77,11 @@ def fetch_ssq_history_page(start=1, end=100):
         f'https://datachart.500.com/ssq/history/newinc/history.php'
         f'?start={start}&end={end}'
     )
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.encoding = 'gb2312'
-        return resp.text
-    except Exception as e:
-        print(f"  请求失败: {e}")
+    resp = _get_with_retry(url)
+    if resp is None:
         return None
+    # 编码已由 http_utils 统一设置（GBK），此处不再硬编码 gb2312
+    return resp.text
 
 
 def parse_ssq_numbers(html):
@@ -150,73 +171,137 @@ def fill_ssq_data():
     print(f"{'='*50}")
     print(f"  当前: {status['count']} 条, 最新期 {status['max_period']}")
 
-    conn = sqlite3.connect(str(DB_PATH))
+    with get_connection() as conn:
 
-    def _save_records(records):
-        """将一批记录写入数据库，只插入不存在的期号，返回实际新增条数"""
-        existing = set(r[0] for r in conn.execute(
-            "SELECT period FROM lottery_records WHERE lottery_type='ssq'"
-        ).fetchall())
-        saved = 0
-        for r in records:
-            if r['period'] in existing:
-                continue
-            try:
-                conn.execute(
-                    """INSERT OR REPLACE INTO lottery_records
-                       (lottery_type, period, date, front_1, front_2, front_3, front_4, front_5, front_6, back_1)
-                       VALUES ('ssq', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (r['period'], r['date'],
-                     r['front'][0], r['front'][1], r['front'][2],
-                     r['front'][3], r['front'][4], r['front'][5],
-                     r['back'])
-                )
-                saved += 1
-            except Exception:
-                pass
-        conn.commit()
-        return saved
+        def _save_records(records):
+            """将一批记录写入数据库，返回实际新增条数。
 
-    def _scrape_year(start_yy):
-        """爬取某年（YY）全年数据并入库，返回该年实际新增条数。
+            用 ON CONFLICT 原子 upsert 替代 INSERT OR REPLACE：
+            REPLACE 语义是"先删后插"，会用空日期覆盖历史正确数据并重置 id；
+            这里改为仅当本次解析到合法日期时才更新已有期号。
+            """
+            saved = 0
+            today = datetime.now().date()
+            for r in records:
+                # 数据校验：确保记录合法性
+                if not r.get('period') or not str(r['period']).strip().isdigit():
+                    continue
+                # H3 未来数据守卫：每年区间请求会返回今年未开奖的预览期，
+                # 开奖日期晚于今天的一律跳过，绝不当作历史入库
+                _d = r.get('date', '') or ''
+                if _d:
+                    try:
+                        if datetime.strptime(_d, '%Y-%m-%d').date() > today:
+                            log.warning("期%s 日期(%s)晚于今天，跳过未来数据", r['period'], _d)
+                            continue
+                    except ValueError:
+                        pass
+                front = r.get('front', [])
+                if len(front) != 6 or not all(1 <= n <= 33 for n in front):
+                    continue
+                back = r.get('back', [])
+                if isinstance(back, int):
+                    back = [back]
+                if len(back) != 1 or not all(1 <= n <= 16 for n in back):
+                    continue
+                try:
+                    cur = conn.execute(
+                        """INSERT INTO lottery_records
+                           (lottery_type, period, date, front_1, front_2, front_3,
+                            front_4, front_5, front_6, back_1)
+                           VALUES ('ssq', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(lottery_type, period) DO UPDATE SET
+                             date=excluded.date,
+                             front_1=excluded.front_1, front_2=excluded.front_2,
+                             front_3=excluded.front_3, front_4=excluded.front_4,
+                             front_5=excluded.front_5, front_6=excluded.front_6,
+                             back_1=excluded.back_1
+                           WHERE excluded.date <> ''""",
+                        (r['period'], r.get('date', ''),
+                         front[0], front[1], front[2], front[3], front[4], front[5],
+                         back[0])
+                    )
+                    # rowcount 为本次语句实际影响行数，被 WHERE 跳过时为 0
+                    if cur.rowcount > 0:
+                        saved += 1
+                except Exception as e:
+                    log.warning("保存 %s 期失败: %s", r.get('period'), e)
+            conn.commit()
+            return saved
 
-        双色球每年约 150 期，一次区间请求（start=YY001, end=YY999）即可覆盖全年。
-        """
-        yy = start_yy
-        start_p = yy * 1000 + 1        # 如 25001
-        end_p = yy * 1000 + 999        # 如 25999
-        html = fetch_ssq_history_page(start=start_p, end=end_p)
-        if not html:
-            print(f"  ⚠️ {yy} 年数据请求失败")
-            return 0
-        records = parse_ssq_numbers(html)
-        if not records:
-            return 0
-        saved = _save_records(records)
-        print(f"  {yy} 年: 解析 {len(records)} 期, 新增 {saved} 期 "
-              f"(范围 {records[0]['period']}~{records[-1]['period']})")
-        return saved
+        def _scrape_year(start_yy):
+            """爬取某年（YY）全年数据并入库，返回该年实际新增条数。
 
-    total_added = 0
-    cur_yy = datetime.now().year % 100
+            双色球每年约 150 期，一次区间请求（start=YY001, end=YY999）即可覆盖全年。
+            """
+            yy = start_yy
+            start_p = yy * 1000 + 1        # 如 25001
+            end_p = yy * 1000 + 999        # 如 25999
+            html = fetch_ssq_history_page(start=start_p, end=end_p)
+            sleep_interval()
+            if not html:
+                print(f"  ⚠️ {yy} 年数据请求失败")
+                return 0
+            records = parse_ssq_numbers(html)
+            if not records:
+                return 0
+            saved = _save_records(records)
+            print(f"  {yy} 年: 解析 {len(records)} 期, 新增 {saved} 期 "
+                  f"(范围 {records[0]['period']}~{records[-1]['period']})")
+            return saved
 
-    print(f"\n  正在从500.com按年区间补全双色球数据...")
-    if not status['count']:
-        # 空库：先补去年再补今年，保证历史充足
-        total_added += _scrape_year(cur_yy - 1)
-    total_added += _scrape_year(cur_yy)
+        total_added = 0
+        cur_yy = datetime.now().year % 100
 
-    # 打印补全后状态
-    new_status = get_ssq_status()
-    print(f"\n{'='*50}")
-    print(f"  补全完成!")
-    print(f"  原来: {status['count']} 条")
-    print(f"  现在: {new_status['count']} 条 (+{total_added})")
-    print(f"  最新: {new_status['max_period']}")
-    print(f"{'='*50}")
+        print(f"\n  正在从500.com按年区间补全双色球数据...")
+        # D4 修复: 非空库也先回补年内缺口（跨年后去年尾巴/中段空洞），
+        # 与 dlt 的 gap 回补机制对齐，避免去年尾部期号永久缺失污染训练集。
+        if status.get('gaps'):
+            print(f"  年内缺失 {len(status['gaps'])} 段，先回补...")
+            for prev_p, next_p, miss in status['gaps']:
+                start_p = prev_p + 1
+                end_p = next_p - 1
+                html = fetch_ssq_history_page(start=start_p, end=end_p)
+                sleep_interval()
+                if not html:
+                    print(f"  ⚠️ 回补 {start_p}~{end_p} 段请求失败")
+                    continue
+                recs = parse_ssq_numbers(html)
+                if recs:
+                    s = _save_records(recs)
+                    total_added += s
+                    print(f"  回补 {start_p}~{end_p} 段: 新增 {s} 期")
 
-    conn.close()
-    return new_status
+        if not status['count']:
+            # 空库：先补去年再补今年，保证历史充足
+            total_added += _scrape_year(cur_yy - 1)
+        else:
+            # D4 修复: 非空库且最新期停在去年（跨年后）时，补去年剩余区间
+            if status['latest_period'] and str(status['latest_period'])[:2] == str(cur_yy - 1):
+                last_yy = cur_yy - 1
+                start_p = status['latest_period'] + 1
+                end_p = last_yy * 1000 + 999
+                if start_p <= end_p:
+                    print(f"  跨年续爬: 补去年 {start_p}~{end_p} 剩余区间...")
+                    html = fetch_ssq_history_page(start=start_p, end=end_p)
+                    sleep_interval()
+                    if html:
+                        recs = parse_ssq_numbers(html)
+                        if recs:
+                            total_added += _save_records(recs)
+                            print(f"  去年剩余: 新增 {len(recs)} 期(实际入库见上)")
+        total_added += _scrape_year(cur_yy)
+
+        # 打印补全后状态
+        new_status = get_ssq_status()
+        print(f"\n{'='*50}")
+        print(f"  补全完成!")
+        print(f"  原来: {status['count']} 条")
+        print(f"  现在: {new_status['count']} 条 (+{total_added})")
+        print(f"  最新: {new_status['max_period']}")
+        print(f"{'='*50}")
+
+        return new_status
 
 
 if __name__ == '__main__':

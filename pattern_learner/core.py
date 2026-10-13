@@ -36,13 +36,61 @@ SCORE_PARAMS = {
     'last_n_penalty_count': 2,     # 对最近N期号码降权 (新增)
 }
 
+# 方向3: 按彩种的评分参数校准（消融实验结论，见 evaluate.py）
+# -------------------------------------------------------------
+# 消融实验（40期 walk-forward，对比随机基线）实测：
+#   dlt: 稀有度加权是严重负贡献（关闭后 0.500→0.750，超过随机 0.714）
+#   kl8: 稀有度加权是核心正贡献（关闭后 5.575→5.225，仍高于随机 5.00）
+# 结论：稀有度/多样性能在 kl8(20/80 高密度) 提供信息，但在 dlt(5/35 低密度)
+# 上是过拟合历史巧合的噪声。故 dlt/ssq 关闭稀有度与多样性，kl8 保留。
+# 其余规则（时间衰减/水平惩罚/遗漏/最近N期降权）在两个彩种上均无显著正贡献
+# 或贡献微小，保守保留。
+# 通过 models/best_params.json（auto_tune）的 per_type 覆盖可进一步微调。
+LOTTERY_SCORE_PARAMS = {
+    'dlt': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'dlt_back': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'ssq': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    'ssq_back': {
+        'rarity_min': 0.0,
+        'rarity_max': 0.0,
+        'diversity_factor': 0.0,
+        'hotness_bonus': 0.0,
+    },
+    # kl8: 稀有度/多样性有效，保留默认（不放覆盖键）
+}
+
+
+def _base_score_params(lottery_type):
+    """返回按彩种校准后的基础评分参数副本（可被 auto_tune 产物覆盖）。"""
+    p = dict(SCORE_PARAMS)
+    p.update(LOTTERY_SCORE_PARAMS.get(lottery_type, {}))
+    return p
+
 
 class PatternLearner:
     """几何图案学习引擎"""
 
     def __init__(self, lottery_type='dlt'):
         self.lottery_type = lottery_type
-        self.matrix = None
+        # 初始化为空矩阵对象（而非 None）：build() 会重新构建并填充真实数据；
+        # 这样所有 self.matrix.matrix / self.matrix.n_periods 访问在类型层面均安全，
+        # 未训练时退化为 n_periods=0 的空矩阵，与调用方契约一致
+        self.matrix: LotteryMatrix = LotteryMatrix(self.lottery_type)
         self.pattern_stats = {}   # {pattern_name: {count, freq, weight}}
         self.pattern_history = []  # 每期的图案统计
 
@@ -80,14 +128,21 @@ class PatternLearner:
         print(f"{'='*50}")
 
         # ---- P3c: 自适应窗口 ----
-        P = SCORE_PARAMS
+        P = _base_score_params(self.lottery_type)
         if P['adaptive_window']:
             if 'num_list' in df.columns:
-                # KL8: 用号码数量密度估算熵
+                # KL8: 用号码数量密度估算熵。快乐8每期开20/80=0.25，
+                # 密度越高代表越混乱（号码覆盖越广）→ 短窗口；密度低 → 长窗口。
                 density = df['num_list'].apply(len).iloc[-30:].mean()
+                # H1 修复: 原来 density 计算后从未使用，KL8 的 num_periods 恒不变，
+                # 自适应窗口对 KL8 完全失效。现在按密度推导：
+                # 每期开奖号码占比 0.1~0.3 之间归一化到 [0,1]，密度高(接近0.3)取短窗口。
+                norm_density = min(max((density - 0.10) / 0.20, 0.0), 1.0) if density else 0.5
+                window_range = P['window_max'] - P['window_min']
+                num_periods = int(P['window_max'] - norm_density * window_range)
+                print(f"  📐 自适应窗口(KL8): 密度={density:.1f} → {num_periods}期")
             else:
                 # DLT/SSQ: 用号码分布的熵
-                from scipy import stats as scipy_stats
                 recent = df.tail(30)
                 counts = np.zeros(self.num_range + 1)
                 for _, row in recent.iterrows():
@@ -96,6 +151,10 @@ class PatternLearner:
                         if 1 <= n <= self.num_range:
                             counts[n] += 1
                 cnt = counts[1:]
+                # 退化窗口(近30期无有效号码)时 cnt.sum()==0，else 分支不会赋值
+                # entropy/max_entropy，而下方 print 会无条件引用它们 → 必须先给默认值
+                entropy = 0.0
+                max_entropy = 1.0
                 if cnt.sum() > 0:
                     prob = cnt / cnt.sum()
                     entropy = -np.sum(prob * np.log2(prob + 1e-10))
@@ -230,11 +289,15 @@ class PatternLearner:
         """
         if self.matrix is None:
             return []
+        # C1 修复: 空矩阵（无训练数据）时无任何可评分图案，直接返回空。
+        # 否则 add_candidate_inplace 的 matrix[0] 越界会抛 IndexError。
+        if self.matrix.n_periods == 0:
+            return []
 
         if candidates is None:
             candidates = list(range(1, self.num_range + 1))
 
-        P = SCORE_PARAMS
+        P = _base_score_params(self.lottery_type)
         omissions = self._compute_omissions()
         hotness = self._compute_hotness(P['hotness_window'])
 
@@ -249,12 +312,17 @@ class PatternLearner:
         results = []
 
         for num in candidates:
-            test_matrix = self.matrix.add_candidate(num)
-            if test_matrix is None:
+            # 性能优化：使用原地修改+恢复，避免每个候选号码都复制整个矩阵
+            if not self.matrix.add_candidate_inplace(num):
                 continue
+            test_matrix = self.matrix.matrix  # 直接使用内部矩阵（已原地修改）
 
             # 使用时间衰减加权统计
             use_decay = P['time_decay_weight'] > 0
+            # 始终初始化，避免 pyright 报 possibly-unbound；
+            # 二者仅在各自分支被真实赋值，且后续均通过 `if use_decay` 三元选择访问，空字典不会被误用
+            weighted_counts: dict = {}
+            raw_counts: dict = {}
             if use_decay:
                 weighted_counts = count_patterns_around_weighted(
                     test_matrix, row=0, col=num, decay=P['time_decay']
@@ -278,6 +346,7 @@ class PatternLearner:
                                     {'遗漏': om_label}))
                 else:
                     results.append((num, 0.0, {}))
+                self.matrix.remove_candidate_inplace(num)
                 continue
 
             score = 0.0
@@ -405,6 +474,7 @@ class PatternLearner:
                                 score *= penalty_factor ** distance
 
             results.append((num, round(score, 2), detail))
+            self.matrix.remove_candidate_inplace(num)  # 恢复矩阵状态
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results
@@ -589,11 +659,20 @@ class PatternLearner:
             print(f"  最大单期命中: {max(hit_counts)}")
             print(f"{'='*50}")
 
+            # M8 修复: 生成回测摘要文本，供 notifier 从报告中提取并拼入钉钉消息。
+            # 旧实现回测只 print 到 stdout，predict_with_report 返回的报告不含回测段，
+            # 导致 _extract_backtest_from_report 永远提取不到 → 钉钉消息缺回测统计。
+            summary = (f"回测结果（最近{test_periods}期，{len(hit_counts)}期有效）\n"
+                       f"  平均命中: {avg_hit:.2f}/{self.pick_count}\n"
+                       f"  平均Top10命中: {avg_top10:.2f}\n"
+                       f"  最大单期命中: {max(hit_counts)}")
+
             return {
                 'avg_hit': avg_hit,
                 'avg_top10_hit': avg_top10,
                 'max_hit': max(hit_counts),
                 'hit_counts': hit_counts,
+                'summary': summary,
             }
 
         return None

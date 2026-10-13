@@ -5,6 +5,9 @@
 根据预测命中数计算三大彩种的中奖奖级和奖金
 """
 
+import itertools
+
+
 # ==================== 大乐透奖级规则 ====================
 # (前区命中数, 后区命中数, 奖级, 匹配描述, 奖金说明)
 DLT_PRIZE_RULES = [
@@ -49,8 +52,20 @@ KL8_SHI10_PRIZE_RULES = [
     (7,  '四等奖', '中7', '80元'),
     (6,  '五等奖', '中6', '5元'),
     (5,  '六等奖', '中5', '3元'),
-    (0,  '六等奖', '中0', '2元（全不中）'),
+    (0,  '六等奖(全不中)', '中0', '2元（全不中）'),
 ]
+
+# 选十各奖级的单注固定奖金（元）；一/二等奖为浮动奖金，无法精确累加，用 None 标记
+# 复式拆单式后按此表累计总奖金，浮动档单独按注数统计
+KL8_SHI10_BONUS_AMOUNT = {
+    10: None,   # 一等奖：浮动（最高500万）
+    9:  None,   # 二等奖：浮动（约8000元）
+    8:  800,
+    7:  80,
+    6:  5,
+    5:  3,
+    0:  2,
+}
 
 # ==================== 快乐8 奖级规则 ====================
 # 快乐8 预测20个号码，实际开奖20个，按命中数量分级
@@ -66,13 +81,21 @@ KL8_HIT_LEVELS = [
 
 # 快乐8「选十」玩法奖级映射（从预测20码中任选10码，按期望命中估算）
 # 20码命中N个 → 从中选10码的期望中奖数 ≈ N/2
-KL8_SHI_PRIZE_MAP = {
-    # 20码命中数 → 选十对应奖级参考
-    range(16, 21): ('选十中八~中十', '有望冲击大奖'),
-    range(13, 16): ('选十中六~中七', '80~8000元'),
-    range(10, 13): ('选十中五~中六', '3~5元'),
-    range(0, 10):  ('选十中五以下', '未中奖'),
-}
+# 20码命中数 → 选十对应奖级参考（按阈值降序排列）
+KL8_SHI_PRIZE_MAP = [
+    (16, '选十中八~中十', '有望冲击大奖'),
+    (13, '选十中六~中七', '80~8000元'),
+    (10, '选十中五~中六', '3~5元'),
+    (0,  '选十中五以下', '未中奖'),
+]
+
+
+def _get_kl8_shi_reference(match_count):
+    """根据命中数获取选十奖级参考"""
+    for threshold, level_name, bonus_hint in KL8_SHI_PRIZE_MAP:
+        if match_count >= threshold:
+            return f'{level_name}（{bonus_hint}）'
+    return '未中奖'
 
 
 # ==================== 奖级计算函数 ====================
@@ -183,13 +206,16 @@ def generate_kl8_combinations(predictions: list) -> dict:
     参数:
         predictions: [(num, score, detail), ...] 按评分降序，或直接 [num, ...] 列表
 
-    策略:
-      - 单式A组: 取 Top-10 (评分最高的10个)
-      - 单式B组: 取 Top-11~20 (次优10个，增加多样性)
-      - 复式11码A: Top-11 (10+1)
-      - 复式11码B: Top-10 + Top-12 (10+1 变体)
-      - 复式12码A: Top-12 (10+2)
-      - 复式12码B: Top-10 + Top-13~14 (10+2 变体)
+    策略（改进2: 错位窗口，最大化号码覆盖）：
+      旧实现 4 组复式全部基于 Top-10 + 个别补位，总覆盖仅 Top-14 且大量重复，
+      6 组注之间重叠严重。改进后各组从不同评分段取号：
+      - 单式A组: Top-1~10
+      - 单式B组: Top-11~20
+      - 复式11码A: Top-1~11
+      - 复式11码B: Top-6~16（错位，覆盖中段）
+      - 复式12码A: Top-1~12
+      - 复式12码B: Top-9~20（错位，覆盖低段）
+      → 总覆盖从 Top-14 提升到 Top-20，分散风险（号码分布广）且每注质量仍高。
 
     返回:
         {
@@ -208,28 +234,20 @@ def generate_kl8_combinations(predictions: list) -> dict:
     if len(all_nums) < 24:
         all_nums = all_nums[:min(len(all_nums), 24)]
 
-    def _get(i):
-        return all_nums[i] if i < len(all_nums) else None
-
-    # 单式A: Top-10
+    # 单式A: Top-1~10
     single_a = sorted(all_nums[:10])
-    # 单式B: 第11~20名
+    # 单式B: Top-11~20
     single_b = sorted(all_nums[10:20]) if len(all_nums) >= 20 else sorted(all_nums[10:])
 
-    # 复式11码A: Top-11 (10+1)
+    # 复式11码A: Top-1~11
     c11_a = sorted(all_nums[:11]) if len(all_nums) >= 11 else sorted(all_nums)
-    # 复式11码B: Top-10 + 第12名 (10+1 变体)
-    c11_b = sorted(all_nums[:10] + ([all_nums[11]] if len(all_nums) >= 12 else [])) if len(all_nums) >= 10 else sorted(all_nums)
+    # 复式11码B: Top-6~16（错位窗口，覆盖中段，与A重叠最小）
+    c11_b = sorted(all_nums[5:16]) if len(all_nums) >= 16 else sorted(all_nums[:10])
 
-    # 复式12码A: Top-12 (10+2)
+    # 复式12码A: Top-1~12
     c12_a = sorted(all_nums[:12]) if len(all_nums) >= 12 else sorted(all_nums)
-    # 复式12码B: Top-10 + 第13~14名 (10+2 变体)
-    extras_b = []
-    if len(all_nums) >= 13:
-        extras_b.append(all_nums[12])
-    if len(all_nums) >= 14:
-        extras_b.append(all_nums[13])
-    c12_b = sorted(all_nums[:10] + extras_b) if len(all_nums) >= 10 else sorted(all_nums)
+    # 复式12码B: Top-9~20（错位窗口，覆盖低段）
+    c12_b = sorted(all_nums[8:20]) if len(all_nums) >= 20 else sorted(all_nums[:10])
 
     return {
         'single': [single_a, single_b],
@@ -259,12 +277,118 @@ def verify_kl8_combinations(combinations: dict, actual_nums: list) -> dict:
     actual_set = set(actual_nums)
 
     def _verify_one(nums):
+        nums = list(nums)
         hit = sorted(set(nums) & actual_set)
-        prize = get_kl8_sh10_prize(len(hit)) if len(nums) <= 12 else None
+        hit_count = len(hit)
+
+        # 单式（恰好10码）：直接按命中数定级
+        if len(nums) == 10:
+            prize = get_kl8_sh10_prize(hit_count)
+            return {
+                'nums': sorted(nums),
+                'hit': hit,
+                'hit_count': hit_count,
+                'prize': prize,
+            }
+
+        # 号码不足 10 码：不是一注合法的选十投注，不能套用选十奖级表
+        if len(nums) < 10:
+            return {
+                'nums': sorted(nums),
+                'hit': hit,
+                'hit_count': hit_count,
+                'prize': {
+                    'is_winning': False,
+                    'level': '',
+                    'bonus': '',
+                    'match_desc': f'号码不足10码（{len(nums)}个），非有效选十投注',
+                    'match_count': hit_count,
+                },
+            }
+
+        # 复式（11码=10+1 / 12码=10+2）：本质是 C(n,10) 张 10码单式的组合，
+        # 例如 11码=C(11,10)=11 注、12码=C(12,10)=66 注。
+        # 必须对每一张 10码子集分别定级再汇总，不能把复式整体套单式奖级表，
+        # 否则命中数>10 会落入兜底误判为“未中奖”，或整体套表算错奖金。
+        hit_set = set(hit)
+        total_bonus = 0.0        # 可精确累计的固定奖金合计（元），浮动大奖不计入此值
+        has_floating = False     # 是否含浮动奖金档（一/二等奖，金额浮动无法精确累加）
+        winning_tickets = 0      # 中奖注数
+        ticket_count = 0         # 复式拆出的总注数
+        # 各奖级注数明细：level -> {'count', 'match_count', 'match_desc', 'bonus'}
+        level_breakdown = {}
+        best_prize = None        # 最高奖级单注（供旧读取方按奖级展示/排序）
+
+        for subset in itertools.combinations(sorted(nums), 10):
+            ticket_count += 1
+            sub_hit = len(hit_set & set(subset))
+            pz = get_kl8_sh10_prize(sub_hit)
+            if not pz['is_winning']:
+                continue
+            winning_tickets += 1
+            amount = KL8_SHI10_BONUS_AMOUNT.get(sub_hit)
+            if amount is None:
+                has_floating = True
+            else:
+                total_bonus += amount
+            # 用 (level_name, match_count) 复合键避免同名奖级(如中5/中0)相互覆盖
+            lb_key = (pz['level'], sub_hit)
+            lb = level_breakdown.setdefault(lb_key, {
+                'count': 0,
+                'match_count': sub_hit,
+                'match_desc': pz['match_desc'],
+                'bonus': pz['bonus'],
+            })
+            lb['count'] += 1
+            if best_prize is None or sub_hit > best_prize['match_count']:
+                best_prize = pz
+
+        # 组装与单式兼容的 prize 字段（含总奖金与命中明细）
+        if winning_tickets > 0:
+            # winning_tickets>0 必有至少一中奖注，故 best_prize 一定已被赋值
+            assert best_prize is not None
+            # 各奖级注数明细文字，按命中数从高到低
+            parts = [
+                f"{v['match_desc']}×{v['count']}注"
+                for _, v in sorted(level_breakdown.items(),
+                                   key=lambda kv: kv[1]['match_count'], reverse=True)
+            ]
+            if has_floating:
+                bonus_str = f"共{winning_tickets}注中奖（含浮动大奖），固定奖金合计{total_bonus:.0f}元"
+            else:
+                bonus_str = f"共{winning_tickets}注中奖，合计{total_bonus:.0f}元"
+            prize = {
+                'level': best_prize['level'],          # 最高奖级
+                'match_desc': '，'.join(parts),         # 各奖级注数明细
+                'bonus': bonus_str,                     # 总奖金描述
+                'is_winning': True,
+                'match_count': best_prize['match_count'],  # 最高命中数（供排序）
+                'is_complex': True,
+                'ticket_count': ticket_count,
+                'winning_tickets': winning_tickets,
+                'total_bonus': total_bonus,
+                'has_floating': has_floating,
+                'level_breakdown': level_breakdown,
+            }
+        else:
+            prize = {
+                'level': '未中奖',
+                'match_desc': f'最高中{min(hit_count, 10)}',
+                'bonus': '0元',
+                'is_winning': False,
+                'match_count': min(hit_count, 10),
+                'is_complex': True,
+                'ticket_count': ticket_count,
+                'winning_tickets': 0,
+                'total_bonus': 0.0,
+                'has_floating': False,
+                'level_breakdown': {},
+            }
+
         return {
             'nums': sorted(nums),
             'hit': hit,
-            'hit_count': len(hit),
+            'hit_count': hit_count,
             'prize': prize,
         }
 
@@ -301,11 +425,7 @@ def get_kl8_hit_level(match_count: int) -> dict:
     for threshold, stars, grade, desc in KL8_HIT_LEVELS:
         if match_count >= threshold:
             # 选十参考
-            shi_ref = '未中奖'
-            for rng, (level_name, bonus_hint) in KL8_SHI_PRIZE_MAP.items():
-                if match_count in rng:
-                    shi_ref = f'{level_name}（{bonus_hint}）'
-                    break
+            shi_ref = _get_kl8_shi_reference(match_count)
             return {
                 'stars': stars,
                 'grade': grade,
@@ -344,9 +464,35 @@ def get_prize(lottery_type: str, front_match_count: int, back_match_count: int =
     elif lottery_type == 'ssq':
         return get_ssq_prize(front_match_count, back_match_count)
     elif lottery_type == 'kl8':
-        return get_kl8_hit_level(front_match_count)
+        return get_kl8_prize(front_match_count)
     else:
         raise ValueError(f"不支持的彩种: {lottery_type}")
+
+
+def get_kl8_prize(match_count):
+    """
+    快乐8 统一奖级入口
+
+    重要：系统预测的是 20 个号码，"20 码命中 N 个"并不等于某一注选十中奖
+    （官方选十：单注 10 码中 10/9/8/7/6/5/0 才算中奖，中 1~4 不中奖）。
+    因此这里只给出"命中评价 + 选十参考"，is_winning 恒为 False；
+    真实中奖判定请用 verify_kl8_combinations() / send_kl8_verification()。
+
+    返回:
+        dict，含 level / bonus / is_winning / match_rate 等字段
+    """
+    info = get_kl8_hit_level(match_count)
+    return {
+        'level': f"{info.get('stars', '')} {info.get('grade', '')}".strip(),
+        'bonus': info.get('shi_reference', ''),
+        # 20 码命中数无法判定选十中奖，置为 False 以免推送"假中奖"
+        'is_winning': False,
+        'match_count': info.get('match_count', match_count),
+        'match_rate': info.get('match_rate', 0),
+        'stars': info.get('stars', ''),
+        'grade': info.get('grade', ''),
+        'description': info.get('description', ''),
+    }
 
 
 def get_prize_level_string(lottery_type: str, front_match_count: int,
