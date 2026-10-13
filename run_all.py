@@ -41,8 +41,7 @@ from notifier import (
     save_prediction, send_prediction
 )
 from prize_calculator import (
-    get_prize_level_string, get_prize, generate_kl8_combinations,
-    verify_kl8_combinations
+    generate_kl8_combinations,
 )
 from generate_charts import load_data
 from kl8_data import ensure_kl8_data
@@ -117,7 +116,6 @@ def step_update_data():
     # 旧实现用 bool(count>0) 判断，爬取失败但库有旧数据时误判可用，
     # 导致用过期期号预测并覆盖已验证记录后验。
     from db_utils import get_connection
-    import sqlite3
 
     def _is_fresh(table, lt=None, max_stale_days=3):
         """检查该彩种最新开奖日期是否在容差内（新鲜=可用）。"""
