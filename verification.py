@@ -147,15 +147,38 @@ def _print_verification_result(lt, period, front_pred, back_pred,
     b_name = back_name_map.get(lt, '后区')
 
     if lt == 'kl8':
+        # 去重修复: 与 run_all 保持一致，kl8 显示组合级命中明细
         hit_str = f"{f_name}{len(front_match)}/20"
-        print(f"   期{period}: {hit_str}")
+        try:
+            from prize_calculator import generate_kl8_combinations, verify_kl8_combinations
+            combos = generate_kl8_combinations(front_pred)
+            verified = verify_kl8_combinations(combos, actual_front_list)
+            any_win = any(v['prize'] and v['prize']['is_winning']
+                          for key in ['single', 'complex_11', 'complex_12']
+                          for v in verified[key])
+            if any_win:
+                best = max((v['prize'] for key in ['single', 'complex_11', 'complex_12']
+                            for v in verified[key]
+                            if v['prize'] and v['prize']['is_winning']),
+                           key=lambda x: x['match_count'])
+                level_str = f"🎉 {best['level']} {best['bonus']}"
+            else:
+                level_str = "未中奖"
+            print(f"   ✅ 期{period}: {hit_str} → {level_str}")
+            for key, label in [('single', '单式'), ('complex_11', '11码'), ('complex_12', '12码')]:
+                for i, v in enumerate(verified[key]):
+                    tag = f"{'AB'[i]}" if key == 'single' else f"注{i+1}"
+                    print(f"      {label} {tag}: 中{v['hit_count']}/10 "
+                          f"{'🎉' if v['prize'] and v['prize']['is_winning'] else ''}")
+        except Exception:
+            print(f"   期{period}: {hit_str}")
     else:
         hit_str = f"{f_name}{len(front_match)}/{len(front_pred)}"
         if back_pred:
             hit_str += f" {b_name}{len(back_match)}/{len(back_pred)}"
         prize = get_prize(lt, len(front_match), len(back_match))
         level_str = prize['level'] or '未中奖'
-        print(f"   期{period}: {hit_str} -> {level_str}")
+        print(f"   ✅ 期{period}: {hit_str} → {level_str}")
 
 
 def _push_verification(lt, period, front_pred, back_pred,
