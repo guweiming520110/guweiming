@@ -1,0 +1,41 @@
+# ============================================================
+#  子模块 Git 属性配置（与根仓库一致）
+# ============================================================
+# 目的：
+#   1. 统一 Python 源文件换行符为 LF，消除 git 的
+#      "CRLF will be replaced by LF" 警告（此前 9 个文件是 CRLF）
+#   2. 保护二进制文件（模型/图表/数据库）不被换行符转换破坏
+#
+# 说明：
+#   - 已用 CRLF 提交过的文件，本次规则生效后 git 会提示差异；
+#     建议对代码文件执行一次 `git add --renormalize .` 统一换行。
+# ============================================================
+
+# 源代码：统一 LF 换行（Windows 检出时保持 LF，git 存储 LF）
+*.py        text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.ini       text eol=lf
+*.toml      text eol=lf
+*.ps1       text eol=lf
+*.json      text eol=lf
+*.csv       text eol=lf
+
+# 数据库文件：强制二进制（防损坏，与根仓库一致）
+*.db        binary
+*.sqlite    binary
+*.sqlite3   binary
+*.db-wal    binary
+*.db-shm    binary
+
+# 模型 / 图表等二进制产物
+*.pkl       binary
+*.h5        binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.model     binary
+
+# 日志（运行时产物，不入版本库，如误加也按文本处理）
+*.log       text eol=lf

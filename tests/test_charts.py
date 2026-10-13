@@ -61,3 +61,32 @@ def test_frequency_chart_generation(dlt_df):
     from charts.frequency import generate_frequency_chart
     out = generate_frequency_chart(dlt_df, lottery_type='dlt')
     assert out is not None
+
+
+def test_composite_chart_output(tmp_path, dlt_df):
+    """合成走势大图：输出到临时目录并生成有效 PNG（计划任务实际路径）。"""
+    from charts.composite import generate_composite_chart
+    out = generate_composite_chart(
+        dlt_df, lottery_type='dlt',
+        network_periods=min(10, len(dlt_df)),
+        trend_periods=min(15, len(dlt_df)),
+        freq_periods=min(20, len(dlt_df)),
+        output_dir=tmp_path,
+        predicted_front=[1, 5, 10, 20, 30],
+        predicted_back=[3, 8],
+    )
+    assert out is not None
+    assert out.exists()
+    # 验证是合法 PNG（文件头签名）
+    with open(out, 'rb') as f:
+        sig = f.read(8)
+    assert sig == b'\x89PNG\r\n\x1a\n'
+
+
+def test_composite_chart_failure_returns_none(dlt_df):
+    """数据异常时合成图返回 None 而非抛异常/残留 buffer。"""
+    from charts.composite import generate_composite_chart
+    import pandas as pd
+    empty = pd.DataFrame(columns=dlt_df.columns)
+    out = generate_composite_chart(empty, lottery_type='dlt', output_dir=None)
+    assert out is None
