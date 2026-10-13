@@ -65,7 +65,10 @@ def load_history_predictions(lottery_type, db_path=None):
                 }
 
     except Exception as e:
-        pass
+        # M12 修复: 异常静默吞掉无痕迹，表不存在/查询失败时难以定位。
+        # 改用 logger 记录（与 trend.py 的 print 行为统一为结构化日志）。
+        from logger import log
+        log.warning("加载历史预测记录失败(彩种=%s): %s", lottery_type, e)
 
     return predictions
 
@@ -282,10 +285,12 @@ def generate_network_chart(df, lottery_type='dlt', num_periods=30,
                         c1 = get_ball_color(bj, cfg)
                         c2 = get_ball_color(nbj, cfg)
                         avg_c = tuple((np.array(c1[:3]) + np.array(c2[:3])) / 2)
+                        # H5 修复: 后区也按是否预测线区分 alpha/线宽，与前区视觉风格一致
                         is_pred_line = (abs_idx >= n or ni >= n)
                         lw = 4.5 if step == 1 else 3.0
                         draw_connection(ax, dj_disp, abs_idx, ndj_disp, ni, color=avg_c,
-                                        alpha=0.55, linewidth=lw, zorder=2)
+                                        alpha=0.55 if not is_pred_line else 0.4,
+                                        linewidth=lw if not is_pred_line else 3.0, zorder=2)
                         connection_count += 1
 
     # ---- 绘制历史号码圆球 ----

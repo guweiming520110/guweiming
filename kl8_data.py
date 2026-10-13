@@ -12,7 +12,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from config import DB_PATH, HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
 from db_utils import get_connection
 from http_utils import get_with_retry
 from logger import log
@@ -25,8 +25,6 @@ KL8_NUMS = 80
 KL8_DRAWN = 20
 # 500.com 走势图接口仅支持这几档期数，避免传入任意值构造出无效 URL
 VALID_PERIODS = (30, 50, 100)
-
-HEADERS = HTTP_HEADERS
 
 
 def period_to_date(period):
@@ -61,9 +59,12 @@ def fetch_kl8_cwl(issue_count=50):
     官方接口 name=kl8 的 red 字段为 20 个开奖号码(逗号分隔)。
     """
     try:
+        # M5 修复: cwl.gov.cn 接口常见反爬要求 Referer 头（当前未强制，但属不稳定依赖；
+        # 一旦被拦，回退的 500 走势图只有最近 30 期，训练数据瞬间枯竭）。
         resp = get_with_retry(
             f'{CWL_KL8_URL}?name=kl8&issueCount={issue_count}',
-            encoding='utf-8'
+            encoding='utf-8',
+            headers={**HTTP_HEADERS, 'Referer': 'https://www.cwl.gov.cn/'},
         )
         if resp is None:
             return None
@@ -366,12 +367,17 @@ def load_kl8_data(limit=None):
         return None
 
 
-def ensure_kl8_data(num_periods=50, force_refresh=False):
+def ensure_kl8_data(num_periods=50, force_refresh=False, history_periods=300):
     """
     确保快乐8真实数据可用（仅从500.com获取，不使用模拟数据）
 
     H4 修复: 除"条数够不够"外增加新鲜度校验——快乐8每日开1期，
     最新一期距今天超过 2 天即视为陈旧，强制重新拉取，避免用旧数据预测。
+
+    D2 修复: 历史补齐——快乐8需要足够历史样本支撑特征工程/预测。
+    旧实现每次只拉 num_periods(30/50/100) 期，库里历史最多 100 期且不回溯，
+    导致训练样本长期不足。现增加 history_periods 目标（默认 300 期≈10个月）：
+    当库中总记录数不足目标时，用 CWL 接口一次拉取较大 issueCount 补历史。
     """
     # 先检查数据库
     df = load_kl8_data(limit=num_periods)
@@ -397,15 +403,21 @@ def ensure_kl8_data(num_periods=50, force_refresh=False):
             days_old = (datetime.now().date() - latest_date).days
             if days_old <= 2:
                 print(f"  从数据库加载 {len(df)} 期快乐8数据 (最新期 {latest['period']} · {latest_date} · {days_old}天前)")
-                return df
+                # D2: 即使数据新鲜，若总历史仍不足目标，也顺带补齐一次
+                _maybe_fill_history(history_periods)
+                return load_kl8_data(limit=num_periods)
             print(f"  ⚠️ 快乐8最新期 {latest['period']} 已是 {days_old} 天前，数据陈旧，重新拉取最新")
         else:
             # 极端兜底：无任何日期可校验时退化为仅按条数判断
             print(f"  从数据库加载 {len(df)} 期快乐8数据 (无日期信息，跳过新鲜度检查)")
-            return df
+            _maybe_fill_history(history_periods)
+            return load_kl8_data(limit=num_periods)
 
     # 首选官方数据源(cwl.gov.cn，日更+日期精确)；失败时回退 500.com 走势图
-    records = fetch_kl8_cwl(num_periods) or scrape_from_500(num_periods)
+    # D2: 若库中历史不足目标，用较大 issueCount 一次补齐（CWL 实测支持 365 期）
+    need_history = _need_history_fill(history_periods)
+    pull_count = max(num_periods, min(history_periods, 365)) if need_history else num_periods
+    records = fetch_kl8_cwl(pull_count) or scrape_from_500(pull_count)
 
     if not records:
         print("  ❌ 无法从500.com获取数据，请检查网络连接")
@@ -416,11 +428,42 @@ def ensure_kl8_data(num_periods=50, force_refresh=False):
     saved = save_to_db(records)
     print(f"  已保存 {saved} 期新数据到数据库")
 
-    df = load_kl8_data(limit=num_periods)
+    df = load_kl8_data(limit=max(num_periods, 50))
     if df is not None and len(df) > 0:
         return df
 
     return None
+
+
+def _total_kl8_rows():
+    """返回 kl8_records 当前总行数（无表/异常时返回 0）"""
+    try:
+        with get_connection(commit=False) as conn:
+            conn.execute(DDL_KL8_RECORDS)
+            return conn.execute("SELECT COUNT(*) FROM kl8_records").fetchone()[0]
+    except Exception:
+        return 0
+
+
+def _need_history_fill(history_periods):
+    """判断库中历史期数是否不足目标"""
+    return _total_kl8_rows() < history_periods
+
+
+def _maybe_fill_history(history_periods):
+    """数据已新鲜但历史不足时，用 CWL 接口拉较大窗口补齐历史（幂等 upsert）"""
+    if not _need_history_fill(history_periods):
+        return
+    need = history_periods - _total_kl8_rows()
+    pull_count = min(max(need, 50), 365)
+    print(f"  ℹ️ 快乐8历史不足（当前{_total_kl8_rows()}期，目标{history_periods}期），补齐历史（拉取{pull_count}期）...")
+    try:
+        records = fetch_kl8_cwl(pull_count)
+        if records:
+            saved = save_to_db(records)
+            print(f"  历史补齐: 新增 {saved} 期 (现有{_total_kl8_rows()}期)")
+    except Exception as e:
+        log.warning("快乐8历史补齐失败: %s", e)
 
 
 if __name__ == '__main__':

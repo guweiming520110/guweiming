@@ -5,7 +5,6 @@
 新增：支持显示历史预测号码（同行为期对比）
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from db_utils import get_connection

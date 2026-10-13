@@ -2,9 +2,6 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.calibration import CalibratedClassifierCV
 import xgboost as xgb
 import pickle
 import os
@@ -84,6 +81,9 @@ class LotteryPredictor:
         """
         y_pred = np.asarray(y_pred)
         y_true = np.asarray(y_true)
+        # L4 修复: 长度不一致时打印告警——静默截断会以"漂亮但错误"的准确率掩盖特征/标签错位
+        if len(y_pred) != len(y_true):
+            print(f"  ⚠️ 验证集{tag}: y_pred({len(y_pred)})与y_true({len(y_true)})长度不一致，截断到较短者")
         n = min(len(y_pred), len(y_true))
         if n == 0:
             print(f"  验证集{tag}: 无验证样本，跳过评估")
@@ -254,33 +254,36 @@ class LotteryPredictor:
             raise ValueError("前区模型未加载或未训练")
         if self.back_count > 0 and not self.rf_models_back:
             raise ValueError("后区模型未加载或未训练")
-        
-        # 验证前区模型
+
+        def _check_classes(model, tag, unique_values):
+            """检查数据中的号码是否都在模型类别覆盖内（RF 与 XGB 共用）。
+
+            M5 修复: 旧实现只验 RF，XGB 遇到训练期未见的号码会静默输出错误概率。
+            """
+            classes = set(model.classes_)
+            missing = sorted({int(v) for v in unique_values} - classes)
+            if missing:
+                raise ValueError(
+                    f"模型与数据不匹配！{tag}模型不包含数值{missing[:10]}{'...' if len(missing) > 10 else ''}。"
+                    f"模型类别范围: {int(min(classes))}-{int(max(classes))}, 数据包含: {int(min(unique_values))}-{int(max(unique_values))}"
+                    f"\n请删除旧模型重新训练。"
+                )
+
+        # 验证前区模型（RF + XGB）
         for i in range(1, self.front_count + 1):
             unique_values = df[f'front_{i}'].unique()
-            model = self.rf_models_front[i-1]
-            
-            for val in unique_values:
-                if val not in model.classes_:
-                    raise ValueError(
-                        f"模型与数据不匹配！前区号码{i}模型不包含数值{val}。"
-                        f"模型类别范围: {model.classes_.min()}-{model.classes_.max()}, 数据包含: {unique_values.min()}-{unique_values.max()}"
-                        f"\n请删除旧模型重新训练。"
-                    )
-        
-        # 验证后区模型
+            _check_classes(self.rf_models_front[i-1], f"前区号码{i}RF", unique_values)
+            if i - 1 < len(self.xgb_models_front):
+                _check_classes(self.xgb_models_front[i-1], f"前区号码{i}XGB", unique_values)
+
+        # 验证后区模型（RF + XGB）
         for i in range(1, self.back_count + 1):
             unique_values = df[f'back_{i}'].unique()
-            model = self.rf_models_back[i-1]
-            
-            for val in unique_values:
-                if val not in model.classes_:
-                    raise ValueError(
-                        f"模型与数据不匹配！后区号码{i}模型不包含数值{val}。"
-                        f"\n请删除旧模型重新训练。"
-                    )
-        
-        print("✅ 模型验证通过（前区+后区）")
+            _check_classes(self.rf_models_back[i-1], f"后区号码{i}RF", unique_values)
+            if i - 1 < len(self.xgb_models_back):
+                _check_classes(self.xgb_models_back[i-1], f"后区号码{i}XGB", unique_values)
+
+        print("✅ 模型验证通过（前区+后区，RF+XGB）")
         return True
     
     def predict_with_probabilities(self, latest_features, play_type='basic'):
@@ -337,8 +340,11 @@ class LotteryPredictor:
         for idx, model in enumerate(self.xgb_models_front):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_front[idx]
+            # S2 修复: 用 le.classes_ 还原号码（概率列索引 → 真实标签）。
+            # 注意不能写成 model.classes_——XGBClassifier 的 classes_ 是 LabelEncoder
+            # 编码后的 0..n-1 值，不是真实号码；le.classes_ 才是原始标签序列。
             for cls_idx, prob in enumerate(pred_proba):
-                num = int(le.inverse_transform([cls_idx])[0])
+                num = int(le.classes_[cls_idx])
                 front_proba_dict.setdefault(num, []).append(prob * xgb_weight)
                 front_wsum[num] = front_wsum.get(num, 0) + xgb_weight
 
@@ -352,8 +358,9 @@ class LotteryPredictor:
         for idx, model in enumerate(self.xgb_models_back):
             pred_proba = model.predict_proba(latest_features)[0]
             le = self.label_encoders_back[idx]
+            # S2 修复: 同前区，用 le.classes_ 还原号码
             for cls_idx, prob in enumerate(pred_proba):
-                num = int(le.inverse_transform([cls_idx])[0])
+                num = int(le.classes_[cls_idx])
                 back_proba_dict.setdefault(num, []).append(prob * xgb_weight)
                 back_wsum[num] = back_wsum.get(num, 0) + xgb_weight
 
@@ -403,11 +410,14 @@ class LotteryPredictor:
             })
         
         elif play_type == 'multiple':
+            # S3 修复: 前区/后区使用同一偏移基数（i*front_count），三组号码互不重叠，
+            # 避免旧实现前区步长2/后区步长1导致的前后区不对齐与前区组间重复。
             for i in range(3):
-                start_idx = i * 2
+                start_idx = i * self.front_count
                 front_slice = sorted_front[start_idx:start_idx+self.front_count]
-                back_slice = sorted_back[:self.back_count] if i == 0 else sorted_back[min(i, len(sorted_back)-self.back_count):min(i+self.back_count, len(sorted_back))]
-                
+                back_start = min(i * self.front_count, max(len(sorted_back) - self.back_count, 0))
+                back_slice = sorted_back[back_start:back_start+self.back_count]
+
                 if len(front_slice) >= self.front_count and len(back_slice) >= self.back_count:
                     result['predictions'].append({
                         'front': sorted([num for num, _ in front_slice[:self.front_count]]),
@@ -488,9 +498,8 @@ class LotteryPredictor:
         for idx, model in enumerate(self.xgb_models_front):
             pred_proba = model.predict_proba(latest_features)[0]
             top_indices = np.argsort(pred_proba)[-3:][::-1]
-            
-            le = self.label_encoders_front[idx]
-            top_nums = le.inverse_transform(top_indices)
+            # S2 修复: 用 le.classes_ 还原号码（model.classes_ 是编码值，不是真实号码）
+            top_nums = self.label_encoders_front[idx].classes_[top_indices]
             front_predictions.extend(top_nums)
         
         front_counter = {}
@@ -511,9 +520,8 @@ class LotteryPredictor:
         for idx, model in enumerate(self.xgb_models_back):
             pred_proba = model.predict_proba(latest_features)[0]
             top_indices = np.argsort(pred_proba)[-2:][::-1]
-            
-            le = self.label_encoders_back[idx]
-            top_nums = le.inverse_transform(top_indices)
+            # S2 修复: 用 le.classes_ 还原号码
+            top_nums = self.label_encoders_back[idx].classes_[top_indices]
             back_predictions.extend(top_nums)
         
         back_counter = {}
@@ -552,11 +560,29 @@ class LotteryPredictor:
         with open(f'{save_path}/feature_cols.pkl', 'wb') as f:
             pickle.dump(self.feature_cols, f)
         
+        # C3 修复: ml_models 只训练 RF/XGB，自身 lstm/transformer 权重恒为 0；
+        # 若直接覆写 ensemble_weights.pkl，会静默清零 DL 侧训好的权重（DL 白算、融合零贡献）。
+        # 保存前读取旧权重文件，保留非零的 DL 权重（仅在本次确实训练/加载过 DL 时用新值）。
+        lstm_w = self.lstm_weight
+        transformer_w = self.transformer_weight
+        if not self.use_deep_learning and (not lstm_w and not transformer_w):
+            try:
+                with open(f'{save_path}/ensemble_weights.pkl', 'rb') as f:
+                    old = pickle.load(f)
+                old_lstm = old.get('lstm_weight', 0.0) or 0.0
+                old_transformer = old.get('transformer_weight', 0.0) or 0.0
+                if old_lstm or old_transformer:
+                    lstm_w = old_lstm
+                    transformer_w = old_transformer
+                    print(f"ℹ️  保留既有 DL 权重 LSTM={lstm_w}, Transformer={transformer_w}（本次仅训练 RF/XGB）")
+            except (FileNotFoundError, pickle.UnpicklingError, AttributeError):
+                pass
+
         weights_dict = {
             'rf_weight': self.rf_weight,
             'xgb_weight': self.xgb_weight,
-            'lstm_weight': self.lstm_weight,
-            'transformer_weight': self.transformer_weight
+            'lstm_weight': lstm_w,
+            'transformer_weight': transformer_w
         }
         with open(f'{save_path}/ensemble_weights.pkl', 'wb') as f:
             pickle.dump(weights_dict, f)
@@ -610,7 +636,9 @@ class LotteryPredictor:
         if load_dl and os.path.exists(f'{load_path}/dl_config.pkl'):
             try:
                 from deep_learning_models import DeepLearningPredictor
-                self.dl_predictor = DeepLearningPredictor()
+                # S1 修复: 传入当前彩种构造，避免默认 dlt 导致 ssq 加载后
+                # front_max=35/back_max=12 不回填，概率遍历范围错误污染融合。
+                self.dl_predictor = DeepLearningPredictor(lottery_type=self.lottery_type)
                 if self.dl_predictor.load_models(load_path):
                     self.use_deep_learning = True
                 else:

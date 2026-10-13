@@ -11,7 +11,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 
-from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from config import HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
 from db_utils import get_connection
 from http_utils import get_with_retry, sleep_interval
 from logger import log
@@ -19,11 +19,6 @@ from lottery_types import next_period
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-
-HEADERS = HTTP_HEADERS
-
-# 单次补全最多翻页数，防止接口恒返回同一批数据时无限循环打站
-MAX_PAGES = 40
 
 
 def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
@@ -109,49 +104,14 @@ def parse_dlt_numbers(html):
     if not html:
         return None
 
+    # M6 修复: 删除原"方法1正则解析"。
+    # 真实页面是 HTML 表格（</td><td> 分隔），纯文本行正则实测 0/68 行命中（死代码），
+    # 且若页面出现 JS 内嵌的纯文本数字序列，会静默产出伪造记录（号码范围校验挡不住
+    # 恰好合法的假数据）。只保留下方 BS4 表格解析作为唯一解析路径。
+
     records = []
 
-    # 方法1: 直接用正则匹配数字序列
-    # 格式如: 2515013141528310105942,601,2234...
-    # 关键: 期号(5位) + 前区5个号码(各1-2位) + 后区2个号码(各1-2位) + 其他数据
-
-    # 查找包含期号和开奖号码的行
-    lines = html.split('\n')
-    for line in lines:
-        line = line.strip()
-        # 匹配期号 (5位数字)
-        period_match = re.search(r'([23]\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})', line)
-        if period_match:
-            period = period_match.group(1)
-            front_nums = [int(period_match.group(i)) for i in range(2, 7)]
-            back_nums = [int(period_match.group(i)) for i in range(7, 9)]
-            if all(1 <= n <= 35 for n in front_nums) and all(1 <= n <= 12 for n in back_nums):
-                # 提取日期 - 找行中的 YYYY-MM-DD 或 YYYY年MM月DD日
-                date_match = re.search(r'(\d{4})[-年](\d{1,2})[-月](\d{1,2})', line)
-                if date_match:
-                    date_str = f"{date_match.group(1)}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
-                else:
-                    # 解析不到就留空，绝不伪造日期（虚假日期会污染按日期的统计）
-                    date_str = ''
-
-                records.append({
-                    'period': period,
-                    'date': date_str,
-                    'front': sorted(front_nums),
-                    'back': sorted(back_nums),
-                })
-
-    if records:
-        # 去重
-        seen = set()
-        unique = []
-        for r in records:
-            if r['period'] not in seen:
-                seen.add(r['period'])
-                unique.append(r)
-        return unique
-
-    # 方法2: 从HTML表格解析
+    # 从HTML表格解析
     soup = BeautifulSoup(html, 'html.parser')
     # 找表格行
     for tr in soup.find_all('tr'):
@@ -252,7 +212,6 @@ def fill_missing_data():
             batch_start = (cur_yy - 1) * 1000 + 1  # 去年年初，如 2026 → 25001
         else:
             batch_start = latest + 1
-        batch_end = batch_start + 50
 
         print(f"\n  正在检查 {batch_start} 期之后的新数据...")
 
@@ -333,6 +292,14 @@ def fill_missing_data():
             records = scrape_dlt_range(block_start, block_end)
             sleep_interval()
             if not records:
+                # M3 修复: 区分"正常终止"（当年已拉完/后续年份无数据）与"网络失败"。
+                # 旧实现任一请求返回空就 break，导致今年数据完全不拉。
+                # 当前年份(pull_yy == cur_yy)返回空多为已拉完——停止循环；
+                # 更早年份返回空才可能是网络抖动，记录告警但继续尝试下一年。
+                if pull_yy == cur_yy:
+                    print(f"  {pull_yy} 年无更多数据，补全完成")
+                else:
+                    print(f"  ⚠️ {pull_yy} 年拉取为空（可能网络失败），继续下一年...")
                 break
             saved = _save_records(records)
             total_added += saved

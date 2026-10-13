@@ -86,11 +86,18 @@ class PatternLearner:
         P = SCORE_PARAMS
         if P['adaptive_window']:
             if 'num_list' in df.columns:
-                # KL8: 用号码数量密度估算熵
+                # KL8: 用号码数量密度估算熵。快乐8每期开20/80=0.25，
+                # 密度越高代表越混乱（号码覆盖越广）→ 短窗口；密度低 → 长窗口。
                 density = df['num_list'].apply(len).iloc[-30:].mean()
+                # H1 修复: 原来 density 计算后从未使用，KL8 的 num_periods 恒不变，
+                # 自适应窗口对 KL8 完全失效。现在按密度推导：
+                # 每期开奖号码占比 0.1~0.3 之间归一化到 [0,1]，密度高(接近0.3)取短窗口。
+                norm_density = min(max((density - 0.10) / 0.20, 0.0), 1.0) if density else 0.5
+                window_range = P['window_max'] - P['window_min']
+                num_periods = int(P['window_max'] - norm_density * window_range)
+                print(f"  📐 自适应窗口(KL8): 密度={density:.1f} → {num_periods}期")
             else:
                 # DLT/SSQ: 用号码分布的熵
-                from scipy import stats as scipy_stats
                 recent = df.tail(30)
                 counts = np.zeros(self.num_range + 1)
                 for _, row in recent.iterrows():
@@ -236,6 +243,10 @@ class PatternLearner:
         8. 冷热号因子：近期频繁出现的号码做温和降权 (P3b)
         """
         if self.matrix is None:
+            return []
+        # C1 修复: 空矩阵（无训练数据）时无任何可评分图案，直接返回空。
+        # 否则 add_candidate_inplace 的 matrix[0] 越界会抛 IndexError。
+        if self.matrix.n_periods == 0:
             return []
 
         if candidates is None:
@@ -603,11 +614,20 @@ class PatternLearner:
             print(f"  最大单期命中: {max(hit_counts)}")
             print(f"{'='*50}")
 
+            # M8 修复: 生成回测摘要文本，供 notifier 从报告中提取并拼入钉钉消息。
+            # 旧实现回测只 print 到 stdout，predict_with_report 返回的报告不含回测段，
+            # 导致 _extract_backtest_from_report 永远提取不到 → 钉钉消息缺回测统计。
+            summary = (f"回测结果（最近{test_periods}期，{len(hit_counts)}期有效）\n"
+                       f"  平均命中: {avg_hit:.2f}/{self.pick_count}\n"
+                       f"  平均Top10命中: {avg_top10:.2f}\n"
+                       f"  最大单期命中: {max(hit_counts)}")
+
             return {
                 'avg_hit': avg_hit,
                 'avg_top10_hit': avg_top10,
                 'max_hit': max(hit_counts),
                 'hit_counts': hit_counts,
+                'summary': summary,
             }
 
         return None

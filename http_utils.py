@@ -37,6 +37,19 @@ def get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT,
             if encoding:
                 resp.encoding = encoding
             return resp
+        except requests.exceptions.HTTPError as e:
+            # M7 修复: 区分可重试与不可重试状态码。
+            # 404/403 等 4xx 是永久性错误（403 多为反爬/封禁），重试只会加剧被封；
+            # 仅对 5xx/429 及网络类异常退避重试。
+            status = e.response.status_code if e.response is not None else None
+            if status is not None and 400 <= status < 500:
+                log.warning("请求被拒(第%d/%d次, HTTP %s): %s（永久性错误，不再重试）",
+                            attempt + 1, max_retries, status, url)
+                return None
+            wait = 2 ** attempt
+            log.warning("请求失败(第%d/%d次, HTTP %s): %s", attempt + 1, max_retries, status, e)
+            if attempt < max_retries - 1:
+                time.sleep(wait)
         except Exception as e:
             wait = 2 ** attempt
             log.warning("请求失败(第%d/%d次): %s", attempt + 1, max_retries, e)

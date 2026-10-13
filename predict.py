@@ -5,9 +5,7 @@
 """
 
 import sys
-import os
 from pathlib import Path
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -180,6 +178,9 @@ def predict_dlt(df, top_k_front=10, top_k_back=5, num_periods=50, backtest_n=0,
         print("\n正在回测后区...")
         bb = PatternLearner('dlt_back')
         bb.backtest(df, test_periods=backtest_n)
+        # M8 修复: 把回测摘要并入报告，notifier 才能从报告中提取回测统计拼进钉钉消息
+        if backtest_result and backtest_result.get('summary'):
+            front_report = front_report.rstrip() + "\n\n" + backtest_result['summary']
 
     front_nums = [str(n) for n, s, d in front_preds[:5]]
     back_nums = [str(n) for n, s, d in back_preds[:2]]
@@ -223,9 +224,12 @@ def predict_ssq(df, top_k_front=12, top_k_back=3, num_periods=50, backtest_n=0,
 
     if backtest_n > 0:
         print("\n正在回测红球...")
-        PatternLearner('ssq').backtest(df, test_periods=backtest_n)
+        bt_res = PatternLearner('ssq').backtest(df, test_periods=backtest_n)
         print("\n正在回测蓝球...")
         PatternLearner('ssq_back').backtest(df, test_periods=backtest_n)
+        # M8 修复: 同 dlt，回测摘要并入报告供钉钉提取
+        if bt_res and bt_res.get('summary'):
+            front_report = front_report.rstrip() + "\n\n" + bt_res['summary']
 
     front_nums = [str(n) for n, s, d in front_preds[:6]]
     back_nums = [str(n) for n, s, d in back_preds[:1]]
@@ -250,7 +254,10 @@ def predict_kl8(df, top_k=30, num_periods=30, backtest_n=0):
 
     if backtest_n > 0:
         print("\n正在回测...")
-        learner.backtest(df, test_periods=backtest_n)
+        bt_res = learner.backtest(df, test_periods=backtest_n)
+        # M8 修复: 同 dlt/ssq，回测摘要并入报告供钉钉提取
+        if bt_res and bt_res.get('summary'):
+            report = report.rstrip() + "\n\n" + bt_res['summary']
 
     # 生成投注组合
     from prize_calculator import generate_kl8_combinations
@@ -421,7 +428,7 @@ if __name__ == '__main__':
                                                    p['front_numbers'], p['back_numbers'],
                                                    actual_nums, [], front_match, set())
                                 # 重建投注组合用于验证
-                                from prize_calculator import generate_kl8_combinations, verify_kl8_combinations, get_kl8_sh10_prize
+                                from prize_calculator import generate_kl8_combinations, verify_kl8_combinations
                                 kl8_combos = generate_kl8_combinations(front_pred)
                                 kl8_verified = verify_kl8_combinations(kl8_combos, actual_nums)
                                 actual_found = True
@@ -449,8 +456,7 @@ if __name__ == '__main__':
 
                         if actual_found:
                             auto_verified += 1
-                            from prize_calculator import (format_hit_detail, format_prize_detail,
-                                                           get_prize, _fmt_nums)
+                            from prize_calculator import (get_prize, _fmt_nums)
 
                             # 详细显示命中结果（含奖级）
                             print(f"\n{'='*55}")

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 from datetime import datetime
-from scipy.stats import entropy, skew, kurtosis
+from scipy.stats import entropy
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -85,6 +85,17 @@ class FeatureEngineer:
         self.add_neighbor_features()
         self.add_zone4_features()
 
+        # M2 修复: 告警「配置了但本彩种未生成」的特征列。
+        # kl8 与 dlt/ssq 的号码结构差异大，部分方法（ac_value/transition/edge_code 等）
+        # 对 kl8 直接 return，配置清单与生成列不一致会静默丢特征——这里显式提示一次，
+        # 避免维护者误以为特征全部生效。
+        from feature_config import get_all_features as _gf
+        configured = set(_gf())
+        generated = set(self.df.columns)
+        missing = sorted(configured - generated)
+        if missing:
+            print(f"  ⚠️ [{self.lottery_type}] {len(missing)} 个配置特征未生成: {missing[:12]}{'...' if len(missing) > 12 else ''}")
+
         return self.df
 
     def add_number_frequency(self):
@@ -166,7 +177,7 @@ class FeatureEngineer:
         for key in omission_records[0].keys():
             self.df[key] = [r[key] for r in omission_records]
             # 防数据泄漏：遗漏值在循环中先用本期(idx)开奖号码归零再记录，
-            # 因此第 idx 行的遗漏统计已含本期(预测目标)信息，整体下移一期，
+            # 因此第 idx 行的遗漏统计已含本期(预测目标)信息。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位），
             # 使第 idx 行只携带 idx 之前已知的信息。
 
     def add_odd_even_ratio(self):
@@ -190,7 +201,7 @@ class FeatureEngineer:
         self.df['even_count'] = even_counts
 
         # 防数据泄漏：奇偶个数直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_size_ratio(self):
         # 动态计算大小号阈值（取号码范围的中点）
@@ -216,7 +227,7 @@ class FeatureEngineer:
         self.df['small_count'] = small_counts
 
         # 防数据泄漏：大小号个数直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_sum_values(self):
         sums = []
@@ -233,7 +244,7 @@ class FeatureEngineer:
         self.df['front_sum'] = sums
 
         # 防数据泄漏：和值直接由本期(idx)开奖号码求和得到（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
         # 注意：add_sum_trend_features 会消费本列，届时读到的已是下移后的安全值。
 
     def add_ac_value(self):
@@ -256,7 +267,7 @@ class FeatureEngineer:
         self.df['ac_value'] = ac_values
 
         # 防数据泄漏：AC值直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
         # 注意：add_ac_span_trend_features 会消费本列，届时读到的已是下移后的安全值。
 
     def add_span_value(self):
@@ -275,7 +286,7 @@ class FeatureEngineer:
         self.df['span'] = spans
 
         # 防数据泄漏：跨度直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
         # 注意：add_ac_span_trend_features 会消费本列，届时读到的已是下移后的安全值。
 
     def get_hot_cold_numbers(self, top_n=10):
@@ -417,8 +428,6 @@ class FeatureEngineer:
         if date_col not in self.df.columns:
             return
 
-        weekdays = []
-        months = []
         weekday_sin = []
         weekday_cos = []
         month_sin = []
@@ -438,16 +447,13 @@ class FeatureEngineer:
                 weekday = 0
                 month = 1
 
-            weekdays.append(weekday)
-            months.append(month)
-
             weekday_sin.append(np.sin(2 * np.pi * weekday / 7))
             weekday_cos.append(np.cos(2 * np.pi * weekday / 7))
             month_sin.append(np.sin(2 * np.pi * month / 12))
             month_cos.append(np.cos(2 * np.pi * month / 12))
 
-        self.df['weekday'] = weekdays
-        self.df['month'] = months
+        # M2 修复: 不再生成未配置的原始 weekday/month 列（只保留已配置的 sin/cos 编码），
+        # 否则 dlt/ssq 训练会静默多出 2 个白算列，特征清单与配置不一致。
         self.df['weekday_sin'] = weekday_sin
         self.df['weekday_cos'] = weekday_cos
         self.df['month_sin'] = month_sin
@@ -487,7 +493,7 @@ class FeatureEngineer:
         self.df['max_consecutive'] = max_consecutive
 
         # 防数据泄漏：连号个数/最长连号直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_interval_density(self):
         # 分三区
@@ -533,7 +539,7 @@ class FeatureEngineer:
             for i in range(1, 11):
                 self.df[f'zone_{i}_count'] = zone_counts[i]
                 # 防数据泄漏：分区个数直接由本期(idx)开奖号码算出（等价于预测目标），
-                # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+                # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
             return
         else:
             zone1_counts = []
@@ -553,7 +559,7 @@ class FeatureEngineer:
         self.df['zone3_count'] = zone3_counts
 
         # 防数据泄漏：分区个数直接由本期(idx)开奖号码算出（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_volatility_features(self, window=10):
         rolling_std = []
@@ -590,7 +596,7 @@ class FeatureEngineer:
         self.df['rolling_entropy'] = rolling_entropy
 
         # 防数据泄漏：滚动窗口 iloc[start_idx:idx+1] 右端含本期(idx)开奖号码，
-        # 波动率/熵中混入了预测目标。整体下移一期，使第 idx 行的统计
+        # 波动率/熵由本期(idx)开奖号码计算。防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位），故本行统计
         # 只覆盖到 idx-1 期，仅携带 idx 之前已知的信息。
 
     def add_similarity_features(self, k=5):
@@ -601,7 +607,7 @@ class FeatureEngineer:
         # 防数据泄漏：原实现在【全量矩阵(含未来期)】上 fit 近邻，并把本期行自身
         # 也纳入检索，导致每行的相似度用到了未来期与本期(预测目标)信息。
         # 改为对每个 idx 仅用【idx 之前的历史行】构建近邻并检索本期行；
-        # 计算完成后再整体下移一期，使第 idx 行仅携带 idx 之前的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
         # 性能优化：使用滑动窗口限制历史范围，避免逐行 fit 全量历史
         feature_matrix = self.df[self.front_cols].values
         window_size = k * 4  # 窗口大小：只用最近 k*4 期做近邻
@@ -625,7 +631,7 @@ class FeatureEngineer:
             similarity_scores.append(1 / (1 + avg_distance))
 
         self.df['similarity_score'] = similarity_scores
-        # 防数据泄漏：检索时用到了本期开奖号码，整体下移一期。
+        # 防数据泄漏：检索用到了本期开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_short_term_momentum(self, windows=[5, 10, 20]):
         """
@@ -733,7 +739,7 @@ class FeatureEngineer:
         self.df['small_gap'] = small_gaps
 
         # 防数据泄漏：各类间隔在循环中已根据本期(idx)开奖号码更新（等价于预测目标），
-        # 整体下移一期，使第 idx 行只携带 idx 之前已知的信息。
+        # 防数据泄漏 （对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_transition_features(self):
         """
@@ -916,7 +922,7 @@ class FeatureEngineer:
             edge_counts.append(count)
 
         self.df['edge_code_count'] = edge_counts
-        # 防数据泄漏：edge_code_count 统计了本期(idx)开奖号码，整体下移一期
+        # 防数据泄漏：edge_code_count 统计了本期(idx)开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_repeat_number_features(self):
         """
@@ -943,7 +949,7 @@ class FeatureEngineer:
                 repeat_counts.append(len(curr_set & prev_set))
 
             self.df['repeat_from_last'] = repeat_counts
-            # 防数据泄漏：重号数用到了本期(idx)开奖号码，整体下移一期
+            # 防数据泄漏：重号数用到了本期(idx)开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
             return
 
         repeat_counts = []
@@ -957,7 +963,7 @@ class FeatureEngineer:
             repeat_counts.append(len(curr_nums & prev_nums))
 
         self.df['repeat_from_last'] = repeat_counts
-        # 防数据泄漏：重号数用到了本期(idx)开奖号码，整体下移一期
+        # 防数据泄漏：重号数用到了本期(idx)开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     # ============================================================
     # Phase 6: 共现对 / 邻号 / 区间分布增强
@@ -1015,7 +1021,7 @@ class FeatureEngineer:
 
         self.df['neighbor_hit_count'] = neighbor_hit_counts
         self.df['neighbor_hit_ratio'] = neighbor_hit_ratios
-        # 防数据泄漏：命中数用到了本期开奖号码，整体下移一期
+        # 防数据泄漏：命中数用到了本期开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
     def add_zone4_features(self):
         """
@@ -1053,7 +1059,7 @@ class FeatureEngineer:
         self.df['zone4_hot_zone_id'] = [max(range(1, 5), key=lambda z: zone_counts[z][i])
                                          for i in range(len(self.df))]
 
-        # 防数据泄漏：四区计数/遗漏/热区ID均用到了本期开奖号码，整体下移一期
+        # 防数据泄漏：四区计数/遗漏/热区ID均用到了本期开奖号码。（对齐说明：特征 idx 行含当期(idx)开奖信息，标签由训练侧 shift(-1) 对齐到 t+1，特征与目标永不同期；此处无代码级下移，勿再补下移以免双重错位）
 
 
 if __name__ == "__main__":

@@ -359,6 +359,66 @@ PATTERN_TEMPLATES = [
 
 # ==================== 图案匹配引擎 ====================
 
+# M10 修复: 嵌套图案双重计分去重。
+# 存在几何上的严格包含关系（如 vert_line_3 ⊂ vert_line_4、triangle_* ⊂ square_2x2、
+# z_shape ⊂ rect_2x3 等）。若不处理，同一候选号码参与大小图案时会被分别计数，
+# 复杂度越高、被嵌套覆盖的号码得分被系统性放大，污染稀有度/加权排序。
+# 规则：当某图案实例被一个更大的图案实例完整包含时，小图案不再单独计分，
+# 只计大图案（其 base_score 已体现更高稀有度）。
+
+
+_PATTERN_MAP = {p['name']: p for p in PATTERN_TEMPLATES}
+
+
+def _build_nested_cover():
+    """构建图案覆盖关系：A -> [B, ...]，B 的 offsets 严格包含 A 的 offsets。"""
+    cover = {}
+    for p in PATTERN_TEMPLATES:
+        a_set = set(p['offsets'])
+        covered_by = [q['name'] for q in PATTERN_TEMPLATES
+                      if q is not p and a_set < set(q['offsets'])]
+        cover[p['name']] = covered_by
+    return cover
+
+
+_NESTED_COVER = _build_nested_cover()
+
+
+def _instance_points(matrix, template, anchor_row, anchor_col):
+    """返回图案实例占用的所有 (r, c) 坐标；任一点出界或缺失时返回 None。"""
+    n_periods, n_cols = matrix.shape
+    max_num = n_cols - 1
+    step = template.get('step', 1)
+    pts = []
+    for dr, dc in template['offsets']:
+        r = anchor_row + dr * step
+        c = anchor_col + dc * step
+        if r < 0 or r >= n_periods or c < 1 or c > max_num:
+            return None
+        if not matrix[r][c]:
+            return None
+        pts.append((r, c))
+    return pts
+
+
+def _covered_by_larger(matrix, a_template, a_pts):
+    """判断 A 实例是否被某个更大图案 B 的实例完整覆盖。
+
+    枚举 A 实例首点作为 B 实例的每个 offset 位置来反推 B 的 anchor，
+    一旦找到 B 实例完整包含 A 实例即返回 True。
+    """
+    for bname in _NESTED_COVER.get(a_template['name'], []):
+        b = _PATTERN_MAP[bname]
+        step = b.get('step', 1)
+        a0 = a_pts[0]
+        for drb, dcb in b['offsets']:
+            ar = a0[0] - drb * step
+            ac = a0[1] - dcb * step
+            b_pts = _instance_points(matrix, b, ar, ac)
+            if b_pts is not None and all(p in b_pts for p in a_pts):
+                return True
+    return False
+
 
 def match_pattern_at(matrix, pattern, row, col):
     """
@@ -452,6 +512,7 @@ def count_patterns_around(matrix, row, col, patterns=None):
                 continue
 
             valid = True
+            pts = []
             for dr, dc in offsets:
                 r = anchor_row + dr * step
                 c = anchor_col + dc * step
@@ -461,8 +522,13 @@ def count_patterns_around(matrix, row, col, patterns=None):
                 if not matrix[r][c]:
                     valid = False
                     break
+                pts.append((r, c))
 
             if valid:
+                # M10: 被更大图案完整包含时不再单独计分，避免嵌套双重计分
+                # （vert_line_3⊂vert_line_4、triangle_*⊂square_2x2 等）
+                if _covered_by_larger(matrix, pattern, pts):
+                    continue
                 counts[name] += 1
 
     return dict(counts)
@@ -508,6 +574,7 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
             # 行号越大表示期数越久远(row=0为最新一期)，用图案触及的最旧行(max_row)作为衰减基准，
             # 使跨越更久远历史的图案权重更低，与"近期图案权重更高"的语义一致
             max_row = 0
+            pts = []
             for dr, dc in offsets:
                 r = anchor_row + dr * step
                 c = anchor_col + dc * step
@@ -519,8 +586,12 @@ def count_patterns_around_weighted(matrix, row, col, patterns=None, decay=0.95):
                     break
                 if r > max_row:
                     max_row = r
+                pts.append((r, c))
 
             if valid:
+                # M10: 被更大图案完整包含时不再单独计分，避免嵌套双重计分
+                if _covered_by_larger(matrix, pattern, pts):
+                    continue
                 total_count += 1
                 total_weighted += decay ** max_row
 

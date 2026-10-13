@@ -125,6 +125,10 @@ def generate_composite_chart(df, lottery_type='dlt',
         print(f"  ⚠️ {len(failed)} 张子图生成失败，放弃输出残缺合成图")
         for f in failed:
             print(f"     - {f}")
+        # M4 修复: 失败分支提前 return 前必须关闭已生成的 buffer，
+        # 否则成功子图的 BytesIO 未被 close（原代码只在结尾统一关闭）。
+        for buf in buffers.values():
+            buf.close()
         return None
 
     images = {k: plt.imread(buf) for k, buf in buffers.items()}

@@ -439,8 +439,11 @@ def format_stats_message(stats: dict) -> str:
             lines.append(f"- {s['front_name']}命中率: **{s['front_hit_rate']:.1f}%** ({s['front_hit']}/{s['front_total']})")
         if s.get('back_hit_rate') is not None:
             lines.append(f"- {s['back_name']}命中率: **{s['back_hit_rate']:.1f}%** ({s['back_hit']}/{s['back_total']})")
-        if s.get('avg_top10_hit') is not None:
-            lines.append(f"- Top10 平均命中: **{s['avg_top10_hit']:.2f}**")
+        # L5 修复: 兼容旧字段名；kl8 显示为"20码平均命中个数"，dlt/ssq 显示"Top10 平均命中"
+        avg_key = 'avg_hit_count' if 'avg_hit_count' in s else 'avg_top10_hit'
+        if s.get(avg_key) is not None:
+            label = '20码平均命中个数' if avg_key == 'avg_hit_count' else 'Top10 平均命中'
+            lines.append(f"- {label}: **{s[avg_key]:.2f}**")
         lines.append("")
 
     lines.append("---")
@@ -720,7 +723,9 @@ def get_accuracy_stats() -> dict:
                     entry['front_hit'] = sum(hits)
                     entry['front_total'] = len(hits) * 20  # kl8 draws 20 numbers
                     entry['front_hit_rate'] = (sum(hits) / (len(hits) * 20)) * 100 if hits else 0
-                    entry['avg_top10_hit'] = sum(hits) / len(hits) if hits else 0
+                    # L5 修复: 原字段名 avg_top10_hit 与 dlt/ssq 的"Top10命中"语义混淆，
+                    # 实为"20码平均命中个数"，改名并补充说明字段。
+                    entry['avg_hit_count'] = sum(hits) / len(hits) if hits else 0
             else:
                 front_cnt = 5 if lt == 'dlt' else 6
                 back_cnt = 2 if lt == 'dlt' else 1
@@ -795,8 +800,7 @@ def format_kl8_verification_message(kl8_combos: dict, actual_nums: list,
         actual_nums: 实际开奖号码列表
         target_period: 目标期号
     """
-    from prize_calculator import (_fmt_nums, verify_kl8_combinations,
-                                   get_kl8_sh10_prize)
+    from prize_calculator import (_fmt_nums, verify_kl8_combinations)
 
     verified = verify_kl8_combinations(kl8_combos, actual_nums)
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -980,8 +984,7 @@ if __name__ == '__main__':
                 else:
                     print("❌ 失败")
                     failed += 1
-                # 间隔1秒避免钉钉限流
-                import time
+                # 间隔1秒避免钉钉限流（time 已在模块顶部导入，无需循环内重复导入）
                 time.sleep(1)
             except Exception as e:
                 print(f"⚠️ 异常: {e}")

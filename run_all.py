@@ -399,12 +399,13 @@ def step_run_predictions(no_notify, data_ok=None, failures=None):
                     'front': ','.join(front_top5),
                     'back': ','.join(back_top2),
                 })
-                # 钉钉推送
+                # M1 修复: save_prediction 不受 --no-notify 影响——预测记录始终落库，
+                # 否则无通知模式下验证机制失效（无记录可对）。钉钉推送才受 no_notify 控制。
+                latest_period = next_period('dlt', df.iloc[-1]['period'])
+                front_nums = [n for n, s, d in front_preds[:5]]
+                back_nums = [n for n, s, d in back_preds[:2]]
+                save_prediction('dlt', latest_period, front_nums, back_nums)
                 if not no_notify:
-                    latest_period = next_period('dlt', df.iloc[-1]['period'])
-                    front_nums = [n for n, s, d in front_preds[:5]]
-                    back_nums = [n for n, s, d in back_preds[:2]]
-                    save_prediction('dlt', latest_period, front_nums, back_nums)
                     ok = send_prediction('dlt', front_preds, back_preds, front_report, back_report, df, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
             else:
@@ -436,11 +437,12 @@ def step_run_predictions(no_notify, data_ok=None, failures=None):
                     'front': ','.join(front_top6),
                     'back': ','.join(back_top1),
                 })
+                # M1 修复: 同 dlt，预测记录始终落库，钉钉推送受 no_notify 控制
+                latest_period = next_period('ssq', df_ssq.iloc[-1]['period'])
+                front_nums = [n for n, s, d in front_preds[:6]]
+                back_nums = [n for n, s, d in back_preds[:1]]
+                save_prediction('ssq', latest_period, front_nums, back_nums)
                 if not no_notify:
-                    latest_period = next_period('ssq', df_ssq.iloc[-1]['period'])
-                    front_nums = [n for n, s, d in front_preds[:6]]
-                    back_nums = [n for n, s, d in back_preds[:1]]
-                    save_prediction('ssq', latest_period, front_nums, back_nums)
                     ok = send_prediction('ssq', front_preds, back_preds, front_report, back_report, df_ssq, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
             else:
@@ -471,9 +473,10 @@ def step_run_predictions(no_notify, data_ok=None, failures=None):
                     'front': ','.join(pred_top20),
                     'back': '',
                 })
+                # M1 修复: 同 dlt/ssq，预测记录始终落库
+                latest_period = next_period('kl8', df_kl8.iloc[-1]['period'])
+                save_prediction('kl8', latest_period, kl8_combos['top_20'])
                 if not no_notify:
-                    latest_period = next_period('kl8', df_kl8.iloc[-1]['period'])
-                    save_prediction('kl8', latest_period, kl8_combos['top_20'])
                     ok = send_prediction('kl8', preds, None, report, '', df_kl8, kl8_combos, target_period=latest_period)
                     print(f"  {'✅' if ok else '❌'} 钉钉推送: {'成功' if ok else '失败'}")
             else:

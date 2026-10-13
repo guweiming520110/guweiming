@@ -6,6 +6,16 @@
 
 from lottery_types import get_config
 
+# M9 修复: 中文字体统一下沉到 charts/config.py（模块加载即生效），
+# 避免只在 generate_charts.py 设置——run_all 等入口直接调用 charts.* 模块时
+# 不经过 generate_charts，中文会缺字/方框。
+try:
+    import matplotlib.pyplot as plt
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans SC']
+    plt.rcParams['axes.unicode_minus'] = False
+except Exception:
+    pass
+
 
 def chart_config(lottery_type):
     """
@@ -103,4 +113,7 @@ def future_periods_count():
 
 
 # 历史号码球颜色常量
-HISTORY_BALL_COLOR = (0.1, 0.55, 0.1)
+# L7 修复: 与 lottery_types.LOTTERY_TYPES[*]['color_ball'] 重复定义，改为从单一真源读取，
+# 避免两处维护不同步。
+from lottery_types import LOTTERY_TYPES
+HISTORY_BALL_COLOR = LOTTERY_TYPES['dlt'].get('color_ball', (0.1, 0.55, 0.1))

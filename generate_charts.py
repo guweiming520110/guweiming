@@ -14,14 +14,12 @@
 
 import pandas as pd
 import os
-import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
 from db_utils import get_connection
 from lottery_types import get_config, LOTTERY_TYPES
@@ -61,10 +59,18 @@ def load_data(lottery_type='dlt', db_path=None, limit=None):
         for csv_name in ['lottery_data_dlt.csv', 'lottery_data.csv']:
             csv_path = BASE_DIR / csv_name
             if csv_path.exists():
-                df = pd.read_csv(str(csv_path))
-                if len(df) > 0:
+                try:
+                    df = pd.read_csv(str(csv_path))
+                except Exception as e:
+                    print(f"  ⚠️ CSV 读取失败 ({csv_name}): {e}")
+                    continue
+                # M2 修复: 校验列结构，避免 CSV 与数据库结构不一致时下游 KeyError/ValueError
+                required = cfg['front_cols'] or ['num_list', 'numbers']
+                missing = [c for c in required if c not in df.columns]
+                if len(df) > 0 and not missing:
                     print(f"从CSV加载了 {len(df)} 条记录 ({csv_name})")
                     return df
+                print(f"  ⚠️ CSV 缺少必需列 {missing}，跳过 ({csv_name})")
         return None
 
     try:
@@ -413,29 +419,35 @@ def generate_all_charts(num_periods=50, output_dir=None, kl8=False,
         # 仅当确实完成了验证（verified_front_set 不为 None，说明目标期已开奖并成功匹配）才推送/保存
         if (verify and predict_front and lottery_type != 'kl8'
                 and verified_front_set is not None):
-            try:
-                from notifier import save_verification, send_verification
+            # M6 修复: 防御性校验——verified_front_set 非 None 依赖 target_period 已解析，
+            # 但显式 --verify --predict-front 且匹配失败时 target_period 可能为 None，
+            # str(None) 会以 'None' 期号污染数据库。此处显式拦截。
+            if target_period is None:
+                print("  ⚠️ 无法确定验证期号(target_period=None)，跳过保存/推送")
+            else:
+                try:
+                    from notifier import save_verification, send_verification
 
-                # 保存验证结果到数据库（使用目标期号，禁止 df.iloc[-1] 盲配）
-                front_str = ','.join(str(n) for n in predict_front)
-                back_str = ','.join(str(n) for n in (predict_back or []))
-                save_verification(
-                    lottery_type, str(target_period),
-                    front_str, back_str,
-                    actual_front, actual_back,
-                    verified_front_set, verified_back_set or set()
-                )
+                    # 保存验证结果到数据库（使用目标期号，禁止 df.iloc[-1] 盲配）
+                    front_str = ','.join(str(n) for n in predict_front)
+                    back_str = ','.join(str(n) for n in (predict_back or []))
+                    save_verification(
+                        lottery_type, str(target_period),
+                        front_str, back_str,
+                        actual_front, actual_back,
+                        verified_front_set, verified_back_set or set()
+                    )
 
-                # 发送钉钉通知
-                ok = send_verification(
-                    lottery_type,
-                    predict_front, predict_back or [],
-                    verified_front_set, verified_back_set or set(),
-                    actual_front, actual_back
-                )
-                print(f"\n{'✅' if ok else '❌'} 钉钉验证推送: {'成功' if ok else '失败'}")
-            except Exception as e:
-                print(f"\n⚠️ 钉钉推送异常: {e}")
+                    # 发送钉钉通知
+                    ok = send_verification(
+                        lottery_type,
+                        predict_front, predict_back or [],
+                        verified_front_set, verified_back_set or set(),
+                        actual_front, actual_back
+                    )
+                    print(f"\n{'✅' if ok else '❌'} 钉钉验证推送: {'成功' if ok else '失败'}")
+                except Exception as e:
+                    print(f"\n⚠️ 钉钉推送异常: {e}")
 
 
 if __name__ == '__main__':
@@ -457,8 +469,22 @@ if __name__ == '__main__':
                        help='验证模式')
     args = parser.parse_args()
 
-    pf = [int(x.strip()) for x in args.predict_front.split(',')] if args.predict_front else None
-    pb = [int(x.strip()) for x in args.predict_back.split(',')] if args.predict_back else None
+    # M3 修复: 号码解析加容错——非法输入(如 '1,abc')不再 ValueError 崩溃，
+    # 静默丢弃非法项并提示，全非法时返回 None。
+    def _parse_nums(s):
+        if not s:
+            return None
+        nums = []
+        for x in s.split(','):
+            x = x.strip()
+            if x.isdigit():
+                nums.append(int(x))
+            else:
+                print(f"  ⚠️ 忽略非法号码: {x!r}")
+        return nums or None
+
+    pf = _parse_nums(args.predict_front)
+    pb = _parse_nums(args.predict_back)
 
     generate_all_charts(
         num_periods=args.periods, output_dir=args.output, kl8=args.kl8,

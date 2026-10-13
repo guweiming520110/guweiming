@@ -32,18 +32,35 @@ class DeepLearningPredictor:
         self.transformer_models_back = []
 
         # 根据彩票类型设置号码范围
-        if lottery_type == 'dlt':
+        self._set_ranges()
+
+    def _set_ranges(self):
+        """按彩种重建号码范围。
+
+        S1 修复: load_models 恢复 lottery_type 后必须重建 front_max/back_max，
+        否则 ssq 加载时仍用默认 dlt 的 35/12，概率遍历范围错误污染融合。
+        """
+        if self.lottery_type == 'dlt':
             self.front_max = 35
             self.back_max = 12
-        elif lottery_type == 'ssq':
+        elif self.lottery_type == 'ssq':
             self.front_max = 33
             self.back_max = 16
         else:
             self.front_max = 35
             self.back_max = 12
 
+    def _norm_num(self, num, max_val):
+        """号码归一化到 [0,1]（M4: 原始号码 1-max 直接喂网络值域跨度过大，训练不稳定）。"""
+        if max_val <= 1:
+            return 0.0
+        return (float(num) - 1.0) / (max_val - 1.0)
+
     def prepare_sequence_data(self, df):
-        """准备时间序列数据（滑动窗口）"""
+        """准备时间序列数据（滑动窗口）
+
+        M4 修复: 输入序列号码归一化到 [0,1]（按各自彩种 max 值），标签保持原始号码。
+        """
         df = df.sort_values('period').reset_index(drop=True)
 
         front_sequences = []
@@ -57,14 +74,14 @@ class DeepLearningPredictor:
 
             for j in range(i, i + self.sequence_length):
                 if self.lottery_type == 'dlt':
-                    front_nums = [df.iloc[j][f'front_{k}'] for k in range(1, 6)]
-                    back_nums = [df.iloc[j][f'back_{k}'] for k in range(1, 3)]
+                    front_nums = [self._norm_num(df.iloc[j][f'front_{k}'], self.front_max) for k in range(1, 6)]
+                    back_nums = [self._norm_num(df.iloc[j][f'back_{k}'], self.back_max) for k in range(1, 3)]
                 elif self.lottery_type == 'ssq':
-                    front_nums = [df.iloc[j][f'front_{k}'] for k in range(1, 7)]
-                    back_nums = [df.iloc[j][f'back_{1}']]
+                    front_nums = [self._norm_num(df.iloc[j][f'front_{k}'], self.front_max) for k in range(1, 7)]
+                    back_nums = [self._norm_num(df.iloc[j][f'back_{1}'], self.back_max)]
                 else:
-                    front_nums = [df.iloc[j][f'front_{k}'] for k in range(1, 6)]
-                    back_nums = [df.iloc[j][f'back_{k}'] for k in range(1, 3)]
+                    front_nums = [self._norm_num(df.iloc[j][f'front_{k}'], self.front_max) for k in range(1, 6)]
+                    back_nums = [self._norm_num(df.iloc[j][f'back_{k}'], self.back_max) for k in range(1, 3)]
                 front_seq.append(front_nums)
                 back_seq.append(back_nums)
 
@@ -182,14 +199,18 @@ class DeepLearningPredictor:
         return model
 
     def train_models(self, df, epochs=50, batch_size=32, verbose=0):
-        """训练LSTM和Transformer模型"""
+        """训练LSTM和Transformer模型
+
+        M3 修复: 返回布尔成功标志，数据不足/无有效序列时返回 False，
+        调用方据此决定是否保存模型，避免写出空模型目录并污染集成权重。
+        """
         print(f"开始训练深度学习模型，数据量: {len(df)}条")
 
         front_seq, back_seq, front_targets, back_targets = self.prepare_sequence_data(df)
 
-        if len(front_seq) < self.sequence_length:
-            print(f"警告：数据不足以训练深度学习模型（需要至少{self.sequence_length}条）")
-            return
+        if len(front_seq) < self.sequence_length or len(front_seq) < 20:
+            print(f"警告：数据不足以训练深度学习模型（需要至少{max(self.sequence_length, 20)}条，当前{len(front_seq)}条序列）")
+            return False
 
         print(f"训练集大小: {len(front_seq)}条序列")
 
@@ -246,6 +267,7 @@ class DeepLearningPredictor:
             self.transformer_models_back.append(transformer_model)
 
         print("✅ 深度学习模型训练完成")
+        return True
 
     def predict_with_probabilities(self, df):
         """使用深度学习模型预测（返回概率）"""
@@ -268,14 +290,15 @@ class DeepLearningPredictor:
         window = df.iloc[len(df) - self.sequence_length:]
         for _, row in window.iterrows():
             if self.lottery_type == 'dlt':
-                front_nums = [row[f'front_{k}'] for k in range(1, 6)]
-                back_nums = [row[f'back_{k}'] for k in range(1, 3)]
+                # M4: 与训练侧一致，输入号码归一化到 [0,1]
+                front_nums = [self._norm_num(row[f'front_{k}'], self.front_max) for k in range(1, 6)]
+                back_nums = [self._norm_num(row[f'back_{k}'], self.back_max) for k in range(1, 3)]
             elif self.lottery_type == 'ssq':
-                front_nums = [row[f'front_{k}'] for k in range(1, 7)]
-                back_nums = [row[f'back_{1}']]
+                front_nums = [self._norm_num(row[f'front_{k}'], self.front_max) for k in range(1, 7)]
+                back_nums = [self._norm_num(row[f'back_{1}'], self.back_max)]
             else:
-                front_nums = [row[f'front_{k}'] for k in range(1, 6)]
-                back_nums = [row[f'back_{k}'] for k in range(1, 3)]
+                front_nums = [self._norm_num(row[f'front_{k}'], self.front_max) for k in range(1, 6)]
+                back_nums = [self._norm_num(row[f'back_{k}'], self.back_max) for k in range(1, 3)]
             latest_front_seq.append(front_nums)
             latest_back_seq.append(back_nums)
 
@@ -402,6 +425,8 @@ class DeepLearningPredictor:
             self.sequence_length = config['sequence_length']
             if 'lottery_type' in config:
                 self.lottery_type = config['lottery_type']
+        # S1 修复: 恢复彩种后重建号码范围，避免沿用 dlt 默认值
+        self._set_ranges()
 
         self.lstm_models_front = []
         self.lstm_models_back = []
@@ -460,19 +485,22 @@ if __name__ == "__main__":
         dl_predictor = DeepLearningPredictor(sequence_length=10, lottery_type='dlt')
 
         print("🏋️  开始训练深度学习模型（这将需要10-20分钟）...")
-        dl_predictor.train_models(df, epochs=30, verbose=1)
+        trained = dl_predictor.train_models(df, epochs=30, verbose=1)
 
-        print("💾 保存模型...")
-        dl_predictor.save_models(path=f'models/dlt')
+        if trained:
+            print("💾 保存模型...")
+            dl_predictor.save_models(path=f'models/dlt')
 
-        print("🔮 测试预测...")
-        probs = dl_predictor.predict_with_probabilities(df)
-        print("\n预测概率示例:")
-        print("前区LSTM Top5:", sorted(probs['front_lstm'].items(),
-                                      key=lambda x: x[1], reverse=True)[:5])
-        print("前区Transformer Top5:", sorted(probs['front_transformer'].items(),
-                                             key=lambda x: x[1], reverse=True)[:5])
-        print("\n✅ 大乐透深度学习训练完成！")
+            print("🔮 测试预测...")
+            probs = dl_predictor.predict_with_probabilities(df)
+            print("\n预测概率示例:")
+            print("前区LSTM Top5:", sorted(probs['front_lstm'].items(),
+                                          key=lambda x: x[1], reverse=True)[:5])
+            print("前区Transformer Top5:", sorted(probs['front_transformer'].items(),
+                                                 key=lambda x: x[1], reverse=True)[:5])
+            print("\n✅ 大乐透深度学习训练完成！")
+        else:
+            print("❌ 深度学习训练未成功（数据不足），跳过保存以免写空模型")
     else:
         print(f"❌ 数据不足，需要至少20条历史数据，当前只有{len(df)}条")
 
@@ -493,19 +521,22 @@ if __name__ == "__main__":
         dl_predictor = DeepLearningPredictor(sequence_length=10, lottery_type='ssq')
 
         print("🏋️  开始训练深度学习模型...")
-        dl_predictor.train_models(df_ssq, epochs=30, verbose=1)
+        trained = dl_predictor.train_models(df_ssq, epochs=30, verbose=1)
 
-        print("💾 保存模型...")
-        dl_predictor.save_models(path=f'models/ssq')
+        if trained:
+            print("💾 保存模型...")
+            dl_predictor.save_models(path=f'models/ssq')
 
-        print("🔮 测试预测...")
-        probs = dl_predictor.predict_with_probabilities(df_ssq)
-        print("\n预测概率示例:")
-        print("前区LSTM Top5:", sorted(probs['front_lstm'].items(),
-                                      key=lambda x: x[1], reverse=True)[:5])
-        print("前区Transformer Top5:", sorted(probs['front_transformer'].items(),
-                                             key=lambda x: x[1], reverse=True)[:5])
-        print("\n✅ 双色球深度学习训练完成！")
+            print("🔮 测试预测...")
+            probs = dl_predictor.predict_with_probabilities(df_ssq)
+            print("\n预测概率示例:")
+            print("前区LSTM Top5:", sorted(probs['front_lstm'].items(),
+                                          key=lambda x: x[1], reverse=True)[:5])
+            print("前区Transformer Top5:", sorted(probs['front_transformer'].items(),
+                                                 key=lambda x: x[1], reverse=True)[:5])
+            print("\n✅ 双色球深度学习训练完成！")
+        else:
+            print("❌ 深度学习训练未成功（数据不足），跳过保存以免写空模型")
     else:
         print(f"❌ 数据不足，需要至少20条历史数据，当前只有{len(df_ssq)}条")
 

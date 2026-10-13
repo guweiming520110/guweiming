@@ -11,15 +11,13 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 
-from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT, HTTP_REQUEST_INTERVAL
+from config import HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
 from db_utils import get_connection
 from http_utils import get_with_retry, sleep_interval
 from logger import log
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-
-HEADERS = HTTP_HEADERS
 
 
 def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
@@ -29,13 +27,40 @@ def _get_with_retry(url, max_retries=HTTP_MAX_RETRIES, timeout=HTTP_TIMEOUT):
 
 
 def get_ssq_status():
-    """检查数据库双色球数据状态"""
+    """检查数据库双色球数据状态（含年内缺口检测，供回补使用）"""
     with get_connection(commit=False) as conn:
         cur = conn.execute(
             "SELECT COUNT(*), MIN(period), MAX(period) FROM lottery_records WHERE lottery_type='ssq'"
         )
         cnt, pmin, pmax = cur.fetchone()
-    return {'count': cnt, 'min_period': pmin, 'max_period': pmax}
+
+        cur = conn.execute(
+            "SELECT period FROM lottery_records WHERE lottery_type='ssq' ORDER BY period"
+        )
+        rows = cur.fetchall()
+
+    # D4 修复: 仿 dlt 的 gap 检测——非空库跨年后去年尾巴期号永不回补的问题
+    # （旧实现只在空库时补去年，库里若最新期停在去年中段，去年尾巴永远缺）
+    from lottery_types import next_period
+    periods = [int(r[0]) for r in rows if str(r[0]).strip().isdigit()]
+    gaps = []
+    for i in range(len(periods) - 1):
+        gap = periods[i + 1] - periods[i]
+        if gap <= 1:
+            continue
+        same_year = str(periods[i])[:2] == str(periods[i + 1])[:2]
+        is_rollover = False
+        try:
+            is_rollover = next_period('ssq', str(periods[i])) == str(periods[i + 1])
+        except Exception:
+            is_rollover = False
+        if (same_year or not is_rollover) and (gap - 1) <= 500:
+            gaps.append((periods[i], periods[i + 1], gap - 1))
+
+    return {
+        'count': cnt, 'min_period': pmin, 'max_period': pmax,
+        'gaps': gaps, 'latest_period': int(pmax) if pmax and str(pmax).strip().isdigit() else 0,
+    }
 
 
 def fetch_ssq_history_page(start=1, end=100):
@@ -229,9 +254,42 @@ def fill_ssq_data():
         cur_yy = datetime.now().year % 100
 
         print(f"\n  正在从500.com按年区间补全双色球数据...")
+        # D4 修复: 非空库也先回补年内缺口（跨年后去年尾巴/中段空洞），
+        # 与 dlt 的 gap 回补机制对齐，避免去年尾部期号永久缺失污染训练集。
+        if status.get('gaps'):
+            print(f"  年内缺失 {len(status['gaps'])} 段，先回补...")
+            for prev_p, next_p, miss in status['gaps']:
+                start_p = prev_p + 1
+                end_p = next_p - 1
+                html = fetch_ssq_history_page(start=start_p, end=end_p)
+                sleep_interval()
+                if not html:
+                    print(f"  ⚠️ 回补 {start_p}~{end_p} 段请求失败")
+                    continue
+                recs = parse_ssq_numbers(html)
+                if recs:
+                    s = _save_records(recs)
+                    total_added += s
+                    print(f"  回补 {start_p}~{end_p} 段: 新增 {s} 期")
+
         if not status['count']:
             # 空库：先补去年再补今年，保证历史充足
             total_added += _scrape_year(cur_yy - 1)
+        else:
+            # D4 修复: 非空库且最新期停在去年（跨年后）时，补去年剩余区间
+            if status['latest_period'] and str(status['latest_period'])[:2] == str(cur_yy - 1):
+                last_yy = cur_yy - 1
+                start_p = status['latest_period'] + 1
+                end_p = last_yy * 1000 + 999
+                if start_p <= end_p:
+                    print(f"  跨年续爬: 补去年 {start_p}~{end_p} 剩余区间...")
+                    html = fetch_ssq_history_page(start=start_p, end=end_p)
+                    sleep_interval()
+                    if html:
+                        recs = parse_ssq_numbers(html)
+                        if recs:
+                            total_added += _save_records(recs)
+                            print(f"  去年剩余: 新增 {len(recs)} 期(实际入库见上)")
         total_added += _scrape_year(cur_yy)
 
         # 打印补全后状态
