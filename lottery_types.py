@@ -94,6 +94,26 @@ def type_name(lottery_type):
 # 无 'yearly_max' 配置的彩种回退到该默认值。
 DEFAULT_YEARLY_MAX = 153
 
+# 改进1: 按彩种 + 年度(YY) 记录实际期数（按官方开奖日历）。
+# 大乐透每周开 3 次(周一/三/六)、双色球每周 3 次(周二/四/日)，年度总期数
+# 取决于当年第一个/最后一个开奖日，并非固定值。
+# 该表收录已确认的年度实际期数（源自真实数据库 max(period)）：
+#   dlt 2025: 25150 止 → 150 期（旧固定阈值 156 会让 25150 错误不跨年）
+#   ssq 2025: 25151 止 → 151 期（旧阈值 153 会让 25151 错误不跨年）
+# 未收录的年度回退到 yearly_max 启发式阈值。跨年前后应人工核对并补充本表。
+YEARLY_ACTUAL_PERIODS = {
+    'dlt': {25: 150},
+    'ssq': {25: 151},
+}
+
+
+def _yearly_max_for(lottery_type, yy):
+    """返回某年度该彩种的期数上限：优先查已确认的实际期数表，回退启发式阈值。"""
+    actual = YEARLY_ACTUAL_PERIODS.get(lottery_type, {}).get(yy)
+    if actual:
+        return actual
+    return LOTTERY_TYPES.get(lottery_type, {}).get('yearly_max', DEFAULT_YEARLY_MAX)
+
 
 def _is_leap_year(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
@@ -128,8 +148,9 @@ def next_period(lottery_type, period):
         raise ValueError(f"{lottery_type} 期号格式非法（应为 5 位 YYNNN，如 26072）: {period!r}")
     year = int(period[:2])
     seq = int(period[2:])
-    # 按彩种读取各自的年度期数阈值，避免共用单一阈值导致年末期号提前/滞后滚动
-    yearly_max = LOTTERY_TYPES.get(lottery_type, {}).get('yearly_max', DEFAULT_YEARLY_MAX)
+    # 改进1: 按彩种+年度读取期数上限（优先实际期数表，回退启发式阈值），
+    # 修复 dlt 2025 年实际 150 期但旧阈值 156 导致 25150 不跨年的 bug。
+    yearly_max = _yearly_max_for(lottery_type, year)
     if seq >= yearly_max:
         return f"{year + 1:02d}001"
     return f"{year:02d}{seq + 1:03d}"

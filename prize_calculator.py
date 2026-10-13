@@ -206,13 +206,16 @@ def generate_kl8_combinations(predictions: list) -> dict:
     参数:
         predictions: [(num, score, detail), ...] 按评分降序，或直接 [num, ...] 列表
 
-    策略:
-      - 单式A组: 取 Top-10 (评分最高的10个)
-      - 单式B组: 取 Top-11~20 (次优10个，增加多样性)
-      - 复式11码A: Top-11 (10+1)
-      - 复式11码B: Top-10 + Top-12 (10+1 变体)
-      - 复式12码A: Top-12 (10+2)
-      - 复式12码B: Top-10 + Top-13~14 (10+2 变体)
+    策略（改进2: 错位窗口，最大化号码覆盖）：
+      旧实现 4 组复式全部基于 Top-10 + 个别补位，总覆盖仅 Top-14 且大量重复，
+      6 组注之间重叠严重。改进后各组从不同评分段取号：
+      - 单式A组: Top-1~10
+      - 单式B组: Top-11~20
+      - 复式11码A: Top-1~11
+      - 复式11码B: Top-6~16（错位，覆盖中段）
+      - 复式12码A: Top-1~12
+      - 复式12码B: Top-9~20（错位，覆盖低段）
+      → 总覆盖从 Top-14 提升到 Top-20，分散风险（号码分布广）且每注质量仍高。
 
     返回:
         {
@@ -231,28 +234,20 @@ def generate_kl8_combinations(predictions: list) -> dict:
     if len(all_nums) < 24:
         all_nums = all_nums[:min(len(all_nums), 24)]
 
-    def _get(i):
-        return all_nums[i] if i < len(all_nums) else None
-
-    # 单式A: Top-10
+    # 单式A: Top-1~10
     single_a = sorted(all_nums[:10])
-    # 单式B: 第11~20名
+    # 单式B: Top-11~20
     single_b = sorted(all_nums[10:20]) if len(all_nums) >= 20 else sorted(all_nums[10:])
 
-    # 复式11码A: Top-11 (10+1)
+    # 复式11码A: Top-1~11
     c11_a = sorted(all_nums[:11]) if len(all_nums) >= 11 else sorted(all_nums)
-    # 复式11码B: Top-10 + 第12名 (10+1 变体)
-    c11_b = sorted(all_nums[:10] + ([all_nums[11]] if len(all_nums) >= 12 else [])) if len(all_nums) >= 10 else sorted(all_nums)
+    # 复式11码B: Top-6~16（错位窗口，覆盖中段，与A重叠最小）
+    c11_b = sorted(all_nums[5:16]) if len(all_nums) >= 16 else sorted(all_nums[:10])
 
-    # 复式12码A: Top-12 (10+2)
+    # 复式12码A: Top-1~12
     c12_a = sorted(all_nums[:12]) if len(all_nums) >= 12 else sorted(all_nums)
-    # 复式12码B: Top-10 + 第13~14名 (10+2 变体)
-    extras_b = []
-    if len(all_nums) >= 13:
-        extras_b.append(all_nums[12])
-    if len(all_nums) >= 14:
-        extras_b.append(all_nums[13])
-    c12_b = sorted(all_nums[:10] + extras_b) if len(all_nums) >= 10 else sorted(all_nums)
+    # 复式12码B: Top-9~20（错位窗口，覆盖低段）
+    c12_b = sorted(all_nums[8:20]) if len(all_nums) >= 20 else sorted(all_nums[:10])
 
     return {
         'single': [single_a, single_b],

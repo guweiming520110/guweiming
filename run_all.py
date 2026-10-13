@@ -113,16 +113,43 @@ def step_update_data():
     """
     step_header(2, TOTAL_STEPS, '📥', '更新三大彩种开奖数据')
     ok = {'dlt': True, 'ssq': True, 'kl8': True}
+    # 改进4: 数据可用性判定——"更新到最新"才可用。
+    # 旧实现用 bool(count>0) 判断，爬取失败但库有旧数据时误判可用，
+    # 导致用过期期号预测并覆盖已验证记录后验。
+    from db_utils import get_connection
+    import sqlite3
+
+    def _is_fresh(table, lt=None, max_stale_days=3):
+        """检查该彩种最新开奖日期是否在容差内（新鲜=可用）。"""
+        try:
+            with get_connection(commit=False) as conn:
+                if table == 'kl8_records':
+                    row = conn.execute("SELECT MAX(date) FROM kl8_records").fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT MAX(date) FROM lottery_records WHERE lottery_type=?", (lt,)).fetchone()
+                if not row or not row[0]:
+                    return False
+                from datetime import datetime
+                latest = datetime.strptime(row[0], '%Y-%m-%d').date()
+                return (datetime.now().date() - latest).days <= max_stale_days
+        except Exception:
+            return False
+
     try:
         _st = fill_dlt_data.fill_missing_data()
-        ok['dlt'] = bool(_st and _st.get('count'))
+        ok['dlt'] = _is_fresh('lottery_records', 'dlt')
+        if not ok['dlt']:
+            print(f"  ⚠️ 大乐透数据未更新到最新(可能爬取失败/停更)，标记不可用")
     except Exception as e:
         ok['dlt'] = False
         print(f"  ⚠️ 大乐透数据更新异常: {e}")
         traceback.print_exc()
     try:
         _st = fill_ssq_data.fill_ssq_data()
-        ok['ssq'] = bool(_st and _st.get('count'))
+        ok['ssq'] = _is_fresh('lottery_records', 'ssq')
+        if not ok['ssq']:
+            print(f"  ⚠️ 双色球数据未更新到最新(可能爬取失败/停更)，标记不可用")
     except Exception as e:
         ok['ssq'] = False
         print(f"  ⚠️ 双色球数据更新异常: {e}")
@@ -131,7 +158,9 @@ def step_update_data():
         _df_kl8 = ensure_kl8_data(num_periods=100, force_refresh=True)
         _n = len(_df_kl8) if _df_kl8 is not None else 0
         print(f"  快乐8: {_n} 期 ✅")
-        ok['kl8'] = _n > 0
+        ok['kl8'] = _is_fresh('kl8_records')
+        if not ok['kl8']:
+            print(f"  ⚠️ 快乐8数据未更新到最新，标记不可用")
     except Exception as e:
         ok['kl8'] = False
         print(f"  ⚠️ 快乐8数据更新异常: {e}")

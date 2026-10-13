@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from config import HTTP_HEADERS, HTTP_ENCODING, HTTP_MAX_RETRIES, HTTP_TIMEOUT
 from db_utils import get_connection
-from http_utils import get_with_retry
+from http_utils import get_with_retry, sleep_interval
 from logger import log
 from schema import DDL_KL8_RECORDS
 
@@ -417,7 +417,11 @@ def ensure_kl8_data(num_periods=50, force_refresh=False, history_periods=300):
     # D2: 若库中历史不足目标，用较大 issueCount 一次补齐（CWL 实测支持 365 期）
     need_history = _need_history_fill(history_periods)
     pull_count = max(num_periods, min(history_periods, 365)) if need_history else num_periods
-    records = fetch_kl8_cwl(pull_count) or scrape_from_500(pull_count)
+    records = fetch_kl8_cwl(pull_count)
+    if not records:
+        # 改进5: CWL 主源失败时回退 500 走势图，两源之间加节流避免连续打站
+        sleep_interval()
+        records = scrape_from_500(pull_count)
 
     if not records:
         print("  ❌ 无法从500.com获取数据，请检查网络连接")

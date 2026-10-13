@@ -67,11 +67,12 @@ def objective(trial, lottery_type='dlt', backtest_n=20):
 
     最大化: avg_hit (平均每期命中个数)
 
-    注意: 这里只在 validation 窗口(回测的最后 backtest_n 期)上评估，
-    最终 best_score 存在乐观偏差(同一窗口既选参又打分)，真正的泛化能力
-    需用更靠后的独立窗口验证(见 evaluate_generalization)。
+    改进3: 修复乐观偏差。旧实现直接在含最新 backtest_n 期的全量 df 上回测，
+    同一窗口既选参又打分 → best_score 系统性乐观。现在：
+      - 调参窗口 = 剔除最新 backtest_n 期后的历史数据（纯训练/选参）；
+      - 最新 backtest_n 期作为 holdout，由 evaluate_generalization 单独评估
+        （真正的留出集，与实际预测目标同向）。
     """
-    from pattern_learner.core import SCORE_PARAMS
     from pattern_learner.core import PatternLearner
 
     # 从当前参数复制
@@ -96,12 +97,13 @@ def objective(trial, lottery_type='dlt', backtest_n=20):
 
         # 加载数据
         df = load_data_for_type(lottery_type)
-        if df is None or len(df) < 30:
+        if df is None or len(df) < backtest_n * 2 + 30:
             return 0.0
 
-        # 运行回测
+        # 改进3: 调参只用剔除最新 holdout 后的历史数据，避免同一窗口选参+打分
+        tune_df = df.iloc[:len(df) - backtest_n]
         learner = PatternLearner(lottery_type)
-        result = learner.backtest(df, test_periods=backtest_n)
+        result = learner.backtest(tune_df, test_periods=backtest_n)
 
         if result is None:
             return 0.0
@@ -168,13 +170,11 @@ def tune(trials=DEFAULT_TRIALS, lottery_type='dlt', backtest_n=20):
 
 def evaluate_generalization(study, lottery_type='dlt', backtest_n=20):
     """
-    用一段独立(非调参)窗口评估最佳参数的泛化能力。
+    用一段独立(未参与选参)的 holdout 窗口评估最佳参数的泛化能力。
 
-    调参时 objective 在 df 最后 backtest_n 期上既优化又打分，best_score
-    因此偏乐观。这里把最新 backtest_n 期(调参窗口)从数据中剔除，改在其
-    紧邻的更早一段独立窗口上回测，得到一个未参与选参的泛化评分。
-    受限于历史数据量(约100期)，无法取"更靠后"的窗口，故用相邻的
-    非重叠窗口作为留出集；该指标仅供参考，用于判断 best_score 的可信度。
+    改进3: 与 objective 配合——objective 已在剔除最新 backtest_n 期的历史数据上
+    调参，因此最新 backtest_n 期就是真正的留出集（且与"预测下一期"的时序方向
+    一致）。这里直接在该留出集上回测，得到未参与选参的泛化评分。
     """
     from pattern_learner.core import PatternLearner
     import pattern_learner.core as core_mod
@@ -191,10 +191,9 @@ def evaluate_generalization(study, lottery_type='dlt', backtest_n=20):
             if k in core_mod.SCORE_PARAMS:
                 core_mod.SCORE_PARAMS[k] = v
 
-        # 剔除最新的调参窗口，在紧邻的更早一段独立窗口上回测
-        holdout_df = df.iloc[:len(df) - backtest_n]
+        # 最新 backtest_n 期 = 未参与选参的留出集，直接在其上回测
         learner = PatternLearner(lottery_type)
-        result = learner.backtest(holdout_df, test_periods=backtest_n)
+        result = learner.backtest(df, test_periods=backtest_n)
     finally:
         core_mod.SCORE_PARAMS.clear()
         core_mod.SCORE_PARAMS.update(original_params)
@@ -205,7 +204,7 @@ def evaluate_generalization(study, lottery_type='dlt', backtest_n=20):
 
     gen_score = result['avg_hit'] + result.get('avg_top10_hit', 0) * 0.5
     print(f"\n{'='*55}")
-    print(f"  🧪 独立窗口泛化评估 (留出集, 未参与选参)")
+    print(f"  🧪 独立窗口泛化评估 (留出集=最新{backtest_n}期, 未参与选参)")
     print(f"  泛化评分: {gen_score:.4f}   validation评分: {study.best_trial.value:.4f}")
     if gen_score < study.best_trial.value:
         print(f"  ⚠️ 泛化评分低于 validation 评分，best_score 存在过拟合")
